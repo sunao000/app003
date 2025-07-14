@@ -97,8 +97,13 @@ const upList=()=>{$('pointList').innerHTML='';
 
 /* ---------- POI 取得 ---------- */
 async function poisWithIdx(coords){
-  const body={request:'pois',geometry:{geojson:{type:'LineString',coordinates:coords}},
-   buffer:BUF,limit:100,filters:{category_ids:REST_IDS}};
+  const body = {
+   request:'pois',
+   geometry:{geojson:{type:'LineString',coordinates:coords}},
+   buffer:BUF,                     // ★ geometry の外に移動（2025-03 仕様）
+   limit:100,
+   filters:{category_ids:REST_IDS.map(String)} // ★ 文字列配列
+ };
   const r=await fetch('https://api.openrouteservice.org/pois',
    {method:'POST',headers:{'Content-Type':'application/json','Authorization':apiKey},
     body:JSON.stringify(body)});
