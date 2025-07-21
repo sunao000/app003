@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>等間隔休憩ルート案内 – シンプル修正版</title>
+  <title>等間隔休憩ルート案内 – ロードバイク専用</title>
 
   <!-- Leaflet / Sortable / Chart.js -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
@@ -23,9 +23,6 @@
     #summary{padding:8px;background:#fafafa;border-top:1px solid #ddd;font-size:0.9rem}
     #progressStatus{margin-left:8px;font-size:0.9rem;color:#666}
     canvas{max-width:100%}
-    .legend{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}
-    .legend-item{display:flex;align-items:center;gap:4px;font-size:0.8rem}
-    .legend-color{width:14px;height:14px;border-radius:50%}
   </style>
 </head>
 <body>
@@ -37,12 +34,9 @@
   <button id="locBtn">現在地追加</button>
   <label><input type="checkbox" id="nearbyOnly"> 近くの場所のみ検索</label>
   <br>
-  <select id="profileSelect">
-    <option value="foot-walking">徒歩</option>
-    <option value="driving-car">車</option>
-    <option value="cycling-regular" selected>自転車（通常）</option>
-    <option value="cycling-road">自転車（ロード）</option>
-    <option value="cycling-mountain">自転車（MTB）</option>
+  <!-- 乗り物プロファイルはロードバイク（cycling‑road）のみに固定 -->
+  <select id="profileSelect" disabled>
+    <option value="cycling-road" selected>ロードバイク</option>
   </select>
   <button id="drawBtn">ルート表示</button>
   <label><input type="checkbox" id="trackToggle"> 現在地トラッキング</label>
@@ -90,9 +84,7 @@ function init(){
   initSortable();
 }
 /******************** 4. Nominatim 検索 ********************/
-async function geoSearch(q){let url=`https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(q)}`;
-  const res=await fetch(url);const js=await res.json();renderSearchResults(js);
-}
+async function geoSearch(q){const res=await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(q)}`);const js=await res.json();renderSearchResults(js);}
 function renderSearchResults(arr){const ul=$('searchResults');ul.innerHTML='';if(!arr.length){ul.hidden=true;return;}ul.hidden=false;
   arr.forEach(o=>{const li=document.createElement('li');li.textContent=o.display_name;li.onclick=()=>{addPoint({name:o.display_name,lat:+o.lat,lon:+o.lon});ul.hidden=true;$('placeInput').value='';};ul.appendChild(li);});}
 /******************** 5. 地点管理 ********************/
@@ -103,8 +95,8 @@ function initSortable(){new Sortable($('pointList'),{animation:150,onEnd:()=>{pt
 function addCurrentPosition(){navigator.geolocation.getCurrentPosition(pos=>{addPoint({name:'現在地',lat:pos.coords.latitude,lon:pos.coords.longitude});});}
 /******************** 7. ルート描画 ********************/
 async function drawRoute(){if(pts.length<2){alert('2地点以上登録してください');return;}
-  const coords=pts.map(p=>[p.lon,p.lat]);const profile=$('profileSelect').value;
-  const body={coordinates:coords,preference:'shortest'}; // ★ 最短距離
+  const coords=pts.map(p=>[p.lon,p.lat]);const profile='cycling-road'; // ロードバイク固定
+  const body={coordinates:coords,preference:'shortest'};
   const r=await fetch(`${PROXY}${ORS_ROOT}/v2/directions/${profile}/geojson`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':apiKey},body:JSON.stringify(body)});
   if(!r.ok){alert('ORS error '+r.status);return;}
   const geo=await r.json();if(routeLayer)map.removeLayer(routeLayer);
