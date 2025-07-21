@@ -23,6 +23,7 @@
     #summary{padding:8px;background:#fafafa;border-top:1px solid #ddd;font-size:0.9rem}
     #progressStatus{margin-left:8px;font-size:0.9rem;color:#666}
     canvas{max-width:100%}
+    .profile-label{padding:4px 8px;font-weight:bold;color:#0066ff}
   </style>
 </head>
 <body>
@@ -33,11 +34,7 @@
   <button id="searchBtn">検索</button>
   <button id="locBtn">現在地追加</button>
   <label><input type="checkbox" id="nearbyOnly"> 近くの場所のみ検索</label>
-  <br>
-  <!-- 乗り物プロファイルはロードバイク（cycling‑road）のみに固定 -->
-  <select id="profileSelect" disabled>
-    <option value="cycling-road" selected>ロードバイク</option>
-  </select>
+  <span class="profile-label">移動手段：ロードバイク</span>
   <button id="drawBtn">ルート表示</button>
   <label><input type="checkbox" id="trackToggle"> 現在地トラッキング</label>
   <label><input type="checkbox" id="timeMode" checked> 休憩 <input id="timeInt" type="number" value="60" style="width:60px"> 分ごと</label>
@@ -63,6 +60,7 @@
 const apiKey   = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9';// ← ★ OpenRouteService API キーをここに
 const PROXY    = 'https://corsproxy.io/?';
 const ORS_ROOT = 'https://api.openrouteservice.org';
+const PROFILE  = 'cycling-road'; // ロードバイク固定
 /******************** 1. 共通ユーティリティ ********************/
 const $ = id => document.getElementById(id);
 function haversine(lat1,lon1,lat2,lon2){const R=6371000;const dLat=(lat2-lat1)*Math.PI/180;const dLon=(lon2-lon1)*Math.PI/180;const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;return 2*R*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));}
@@ -95,9 +93,9 @@ function initSortable(){new Sortable($('pointList'),{animation:150,onEnd:()=>{pt
 function addCurrentPosition(){navigator.geolocation.getCurrentPosition(pos=>{addPoint({name:'現在地',lat:pos.coords.latitude,lon:pos.coords.longitude});});}
 /******************** 7. ルート描画 ********************/
 async function drawRoute(){if(pts.length<2){alert('2地点以上登録してください');return;}
-  const coords=pts.map(p=>[p.lon,p.lat]);const profile='cycling-road'; // ロードバイク固定
+  const coords=pts.map(p=>[p.lon,p.lat]);
   const body={coordinates:coords,preference:'shortest'};
-  const r=await fetch(`${PROXY}${ORS_ROOT}/v2/directions/${profile}/geojson`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':apiKey},body:JSON.stringify(body)});
+  const r=await fetch(`${PROXY}${ORS_ROOT}/v2/directions/${PROFILE}/geojson`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':apiKey},body:JSON.stringify(body)});
   if(!r.ok){alert('ORS error '+r.status);return;}
   const geo=await r.json();if(routeLayer)map.removeLayer(routeLayer);
   routeLayer=L.geoJSON(geo.features[0],{style:{color:'#0066ff',weight:6}}).addTo(map);
