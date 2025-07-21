@@ -3,488 +3,369 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>等間隔休憩ルート案内（拡張・CORS対応）</title>
+<title>拡張版ルート案内</title>
 
-<!-- Leaflet -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-
-<!-- Sortable.js -->
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-
-<!-- Chart.js -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <style>
-  :root{
-    --legend-blue:#2e7dff;
-    --legend-red:#ff2e2e;
-    --legend-orange:#ff8c00;
-    --legend-gray:#999;
+  #map { height: 500px; width: 100%; }
+  #controls { margin: 10px 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  #pointList { list-style: none; padding: 0; margin: 0; }
+  #pointList li {
+    padding: 4px; border: 1px solid #ccc; margin-bottom: 4px;
+    background: #fafafa; display: flex; justify-content: space-between; align-items: center;
+    cursor: grab;
   }
-  body{font-family:sans-serif;margin:0;padding:0}
-  #controls{margin:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-  #map{height:500px;width:100%;}
-  #pointList{list-style:none;padding:0;margin:10px;max-width:360px}
-  #pointList li{padding:4px;border:1px solid #ccc;margin-bottom:4px;background:#fafafa;display:flex;justify-content:space-between;align-items:center;cursor:grab}
-  #pointList li.dragging{opacity:.5}
-  #searchResults{list-style:none;padding:0;margin:0;max-height:160px;overflow-y:auto;border:1px solid #ccc;background:#fff;position:absolute;z-index:9999;width:300px}
-  #searchResults li{padding:4px;border-bottom:1px solid #eee;cursor:pointer}
-  #searchResults li:hover{background:#f0f0f0}
-  #legend{margin:10px;padding:6px 8px;background:rgba(255,255,255,.9);border:1px solid #ccc;font-size:13px;line-height:1.2}
-  #legend div{display:flex;align-items:center;gap:4px;margin-bottom:4px}
-  .lg-dot{width:14px;height:22px;background-size:contain;background-repeat:no-repeat}
-  .lg-blue{background-image:url("https://maps.gstatic.com/mapfiles/ms2/micons/green-dot.png");filter:hue-rotate(200deg) saturate(4)} /* quick tint */
-  .lg-red{background-image:url("https://maps.gstatic.com/mapfiles/ms2/micons/red-dot.png")}
-  .lg-via{background-image:url("https://maps.gstatic.com/mapfiles/ms2/micons/blue-dot.png")}
-  .lg-orange{background-image:url("https://maps.gstatic.com/mapfiles/ms2/micons/orange-dot.png")}
-  .lg-gray{background-image:url("https://maps.gstatic.com/mapfiles/ms2/micons/ltblue-dot.png");filter:grayscale(1) brightness(.7)}
-  #summaryBox{margin:10px;padding:8px;border:1px solid #ccc;background:#fff;max-width:420px;font-size:14px}
-  #chartBox{margin:10px;max-width:640px}
-  #progressStatus{margin:10px;font-size:13px;color:#555}
-  .hidden{display:none}
+  #searchResults { list-style: none; max-height: 120px; overflow-y: auto; border: 1px solid #ccc; padding: 0; margin: 4px 0; }
+  #searchResults li { padding: 4px; cursor: pointer; }
+  #searchResults li:hover { background: #eee; }
+  .legend { display:flex; gap: 10px; margin:10px 0; }
+  .legend span { display:inline-block; padding-left:20px; background-repeat:no-repeat; background-position:left center; }
+  .legend-blue { background:url('https://maps.gstatic.com/mapfiles/ms2/micons/green-dot.png') no-repeat left center; }
+  .legend-red { background:url('https://maps.gstatic.com/mapfiles/ms2/micons/red-dot.png') no-repeat left center; }
+  .legend-orange { background:url('https://maps.gstatic.com/mapfiles/ms2/micons/orange-dot.png') no-repeat left center; }
+  .legend-gray { background:url('https://maps.gstatic.com/mapfiles/ms2/micons/ltblue-dot.png') no-repeat left center; }
 </style>
 </head>
 <body>
 
-<!-- ▼ 操作パネル -->
 <div id="controls">
   <input id="placeInput" placeholder="地名・住所" style="width:240px">
   <button id="searchBtn">検索</button>
-  <label><input type="checkbox" id="nearOnly">近くの場所のみ検索</label>
-  <button id="addHereBtn">現在地追加</button>
-  <select id="profileSelect" title="移動プロファイル">
-    <option value="foot-walking">徒歩</option>
-    <option value="driving-car">自動車</option>
-    <option value="cycling-regular">自転車（一般）</option>
-    <option value="cycling-road" selected>自転車（ロード）</option>
-    <option value="cycling-mountain">自転車（MTB）</option>
-    <option value="cycling-electric">自転車（電動）</option>
-  </select>
+  <button id="geoBtn">現在地追加</button>
   <button id="drawBtn">ルート表示</button>
-  <label><input type="checkbox" id="watchPosChk">現在地トラッキング</label>
-  <label><input type="checkbox" id="restEnableChk">休憩自動挿入</label>
-  <span id="restCtl" class="hidden">
-    <input id="timeInt" type="number" value="60" min="1" style="width:60px"> 分ごと
-  </span>
-  <button id="dlCsvBtn" disabled>CSV DL</button>
-  <button id="dlPngBtn" disabled>グラフPNG DL</button>
+
+  <select id="profileSelect">
+    <option value="foot-walking">徒歩</option>
+    <option value="driving-car">車</option>
+    <option value="cycling-road">自転車（ロード）</option>
+    <option value="cycling-regular">自転車（一般）</option>
+  </select>
+
+  <label><input type="checkbox" id="nearbyOnly">近くの場所のみ検索</label>
+  <label>休憩 <input id="restInt" type="number" value="60" min="10" step="5" style="width:60px">分ごと</label>
+  <label><input type="checkbox" id="trackToggle">リアルタイム追跡</label>
 </div>
+
+<ul id="searchResults"></ul>
 <ul id="pointList"></ul>
-<ul id="searchResults" class="hidden"></ul>
+<div class="legend">
+  <span class="legend-blue">出発地</span>
+  <span class="legend-red">目的地</span>
+  <span class="legend-orange">実 POI 休憩</span>
+  <span class="legend-gray">仮休憩</span>
+</div>
 <div id="map"></div>
-<div id="summaryBox"></div>
-<div id="chartBox"><canvas id="distChart"></canvas></div>
+
+<div id="summary"></div>
+<canvas id="distanceChart" width="400" height="200"></canvas>
+<button id="downloadPng">グラフPNG</button>
+<button id="downloadCsv">CSV出力</button>
 <div id="progressStatus"></div>
-<div id="legend"></div>
 
 <script>
-/* =============================================================
- * 0. 定数・基本設定
- * ============================================================= */
-const apiKey   = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9';// ←★OpenRouteService API Key（必須）
+/* ===== 0. 定数 ===== */
+const apiKey = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; // ORS APIキー
 const ORS_ROOT = 'https://api.openrouteservice.org';
-const PROXY    = 'https://corsproxy.io/?'; // 必要に応じて
+const PROXY    = 'https://corsproxy.io/?';
+const REST_POI_IDS = [533,532,414]; // コンビニ・スーパー・道の駅
+const REST_RADIUS  = 1000;
 
-/* POI カテゴリ（休憩検索用） */
-const POI_REST_IDS = [533,532,414]; // コンビニ,スーパー,道の駅
+/* ===== 1. 地図初期化 ===== */
+const map = L.map('map').setView([35.681236, 139.767125], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {attribution:'© OpenStreetMap contributors'}).addTo(map);
 
-/* マーカーアイコン */
-const iconStart = L.icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/green-dot.png',iconSize:[32,32],iconAnchor:[16,32]});
-const iconDest  = L.icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/red-dot.png',iconSize:[32,32],iconAnchor:[16,32]});
-const iconVia   = L.icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/blue-dot.png',iconSize:[32,32],iconAnchor:[16,32]});
-const iconPOI   = L.icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/orange-dot.png',iconSize:[32,32],iconAnchor:[16,32]});
-const iconPOIGray = L.icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/ltblue-dot.png',iconSize:[32,32],iconAnchor:[16,32],className:'icon-gray'});
+let points = [];  // 登録地点
+let routeLayer, poiLayer, restLayer;
+let watchId = null; // GeolocationウォッチID
 
-/* 現在地トラッキング threshold(m) */
-const MOVE_THRESHOLD = 50;
+/* ===== 2. DOM参照 ===== */
+const $ = id => document.getElementById(id);
+const pointList = $('pointList');
 
-/* =============================================================
- * 1. 地図初期化（東京駅）
- * ============================================================= */
-const map = L.map('map').setView([35.681236,139.767125],11);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'©OpenStreetMap'}).addTo(map);
-
-/* レイヤグループ */
-const markerLayer = L.layerGroup().addTo(map);      // 出発/経由/目的地
-const restLayer   = L.layerGroup().addTo(map);      // 休憩ピン
-let routeLayerMain=null;                            // メインルート
-let routeLayerAlt =null;                            // 坂多ルート（2点時）
-
-/* =============================================================
- * 2. 状態管理
- * ============================================================= */
-let points=[]; // {name,lat,lon}
-let watchId=null; // geolocation watchPosition id
-let lastWatchPos=null; // {lat,lon}
-let currentRouteData=null; // directionsレスポンス（最小坂）
-let currentRouteDataAlt=null; // 坂多ルート（比較用）
-let chart=null; // Chart.js instance
-
-/* DOM ショートカット */
-const $=id=>document.getElementById(id);
-const pointListEl=$('pointList');
-const searchResultsEl=$('searchResults');
-const nearOnlyChk=$('nearOnly');
-const addHereBtn=$('addHereBtn');
-const profileSelect=$('profileSelect');
-const drawBtn=$('drawBtn');
-const watchPosChk=$('watchPosChk');
-const restEnableChk=$('restEnableChk');
-const restCtl=$('restCtl');
-const timeIntEl=$('timeInt');
-const dlCsvBtn=$('dlCsvBtn');
-const dlPngBtn=$('dlPngBtn');
-const summaryBox=$('summaryBox');
-const progressStatus=$('progressStatus');
-
-/* =============================================================
- * 3. 地点リスト描画 & Sortable
- * ============================================================= */
-function renderPoints(){
-  pointListEl.innerHTML='';
-  points.forEach((p,i)=>{
-    const li=document.createElement('li');
-    li.dataset.idx=i;
-    li.innerHTML=`<span>${p.name}</span><button data-del="1">×</button>`;
-    pointListEl.appendChild(li);
+/* ===== 3. 地点リスト管理 (Sortable.js) ===== */
+Sortable.create(pointList, {
+  onEnd: function () {
+    const newPoints = [];
+    pointList.querySelectorAll('li').forEach(li => {
+      const idx = li.getAttribute('data-idx');
+      newPoints.push(points[idx]);
+    });
+    points = newPoints;
+    refreshList();
+  }
+});
+function refreshList() {
+  pointList.innerHTML = '';
+  points.forEach((p, i) => {
+    const li = document.createElement('li');
+    li.setAttribute('data-idx', i);
+    li.textContent = p.name;
+    const del = document.createElement('button');
+    del.textContent = '×';
+    del.onclick = () => { points.splice(i,1); refreshList(); };
+    li.appendChild(del);
+    pointList.appendChild(li);
   });
 }
 
-pointListEl.addEventListener('click',e=>{
-  if(e.target.dataset.del){
-    const idx=+e.target.closest('li').dataset.idx;
-    points.splice(idx,1);
-    renderPoints();
-    drawMarkers();
+/* ===== 4. 地名検索 (最大10件) ===== */
+$('searchBtn').onclick = () => {
+  const q = $('placeInput').value.trim();
+  if (!q) return;
+  let url = `https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(q)}`;
+  if ($('nearbyOnly').checked && navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(pos => {
+      url += `&viewbox=${pos.coords.longitude-0.05},${pos.coords.latitude+0.05},${pos.coords.longitude+0.05},${pos.coords.latitude-0.05}&bounded=1`;
+      fetchNominatim(url);
+    });
+  } else {
+    fetchNominatim(url);
   }
-});
-
-new Sortable(pointListEl,{
-  animation:150,
-  onEnd:evt=>{
-    const oldI=evt.oldIndex,newI=evt.newIndex;
-    if(oldI===newI)return;
-    const moved=points.splice(oldI,1)[0];
-    points.splice(newI,0,moved);
-    renderPoints();
-    drawMarkers();
-  }
-});
-
-/* =============================================================
- * 4. 検索（Nominatim）最大10件 / 近くのみオプション
- * ============================================================= */
-async function searchPlace(q){
-  if(!q)return[];
-  let url=`https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(q)}`;
-  if(nearOnlyChk.checked && lastWatchPos){
-    // 現在地周辺（~20km bbox 例）※厳密にしたい場合はユーザ設定距離を導入
-    const R=0.18; // 約20km弱（緯度 ~111km/deg 換算で0.18deg ≈ 20km）
-    const {lat,lon}=lastWatchPos;
-    const viewbox=[lon-R,lat-R,lon+R,lat+R].join(',');
-    url+=`&bounded=1&viewbox=${viewbox}`;
-  }
-  const r=await fetch(url,{headers:{'Accept-Language':'ja'}});
-  if(!r.ok)return[];
-  return r.json();
+};
+function fetchNominatim(url) {
+  fetch(url).then(r=>r.json()).then(data => {
+    const list = $('searchResults');
+    list.innerHTML='';
+    data.forEach(d => {
+      const li = document.createElement('li');
+      li.textContent = d.display_name;
+      li.onclick = () => {
+        points.push({name:d.display_name, lat:+d.lat, lon:+d.lon});
+        refreshList();
+        list.innerHTML='';
+        $('placeInput').value='';
+      };
+      list.appendChild(li);
+    });
+  });
 }
 
-$('searchBtn').onclick=async()=>{
-  const q=$('placeInput').value.trim();
-  if(!q)return;
-  const res=await searchPlace(q);
-  searchResultsEl.innerHTML='';
-  if(!res.length){searchResultsEl.classList.add('hidden');return;}
-  res.forEach((d)=>{
-    const li=document.createElement('li');
-    li.textContent=d.display_name;
-    li.onclick=()=>{addPoint({name:d.display_name,lat:+d.lat,lon:+d.lon});searchResultsEl.classList.add('hidden');$('placeInput').value='';};
-    searchResultsEl.appendChild(li);
+/* ===== 5. 現在地追加 ===== */
+$('geoBtn').onclick = () => {
+  if (!navigator.geolocation) return alert('Geolocation未対応');
+  navigator.geolocation.getCurrentPosition(pos => {
+    points.push({name:'現在地', lat:pos.coords.latitude, lon:pos.coords.longitude});
+    refreshList();
   });
-  const rect=$('placeInput').getBoundingClientRect();
-  searchResultsEl.style.left=rect.left+'px';
-  searchResultsEl.style.top=(rect.bottom+window.scrollY)+'px';
-  searchResultsEl.style.width=rect.width+'px';
-  searchResultsEl.classList.remove('hidden');
 };
 
-document.body.addEventListener('click',e=>{if(!searchResultsEl.contains(e.target)&&e.target!=$('placeInput'))searchResultsEl.classList.add('hidden');});
-
-function addPoint(p){points.push(p);renderPoints();drawMarkers();}
-
-/* =============================================================
- * 5. 現在地追加 & トラッキング
- * ============================================================= */
-addHereBtn.onclick=()=>{getCurrentPosition(true)};
-watchPosChk.onchange=()=>{if(watchPosChk.checked)startWatch();else stopWatch();};
-
-function getCurrentPosition(addToList=false){
-  if(!navigator.geolocation){alert('Geolocation未対応');return;}
-  navigator.geolocation.getCurrentPosition(pos=>{
-    const {latitude:lat,longitude:lon}=pos.coords;
-    lastWatchPos={lat,lon};
-    if(addToList)addPoint({name:'現在地',lat,lon});
-  },err=>{console.error(err);alert('現在地取得失敗');});
-}
-
-function startWatch(){
-  if(!navigator.geolocation){alert('Geolocation未対応');watchPosChk.checked=false;return;}
-  watchId=navigator.geolocation.watchPosition(pos=>{
-    const {latitude:lat,longitude:lon}=pos.coords;
-    if(lastWatchPos){
-      const moved=calcHaversine(lastWatchPos.lat,lastWatchPos.lon,lat,lon);
-      if(moved*1000>=MOVE_THRESHOLD){ // km→m
-        lastWatchPos={lat,lon};
-        // 現在地の扱い: points[0]を出発地に固定する場合は別処理。ここではマーカーのみ更新
-        drawMarkers();
-        // 現在ルートが描画済みなら自動再描画
-        if(points.length>=2)drawRoute();
+/* ===== 6. リアルタイムトラッキング ===== */
+$('trackToggle').onchange = () => {
+  if ($('trackToggle').checked) {
+    if (!navigator.geolocation) return alert('Geolocation未対応');
+    watchId = navigator.geolocation.watchPosition(pos => {
+      const current = points.find(p=>p.name==='現在地');
+      if (current) {
+        const dist = L.latLng(current.lat,current.lon)
+                       .distanceTo([pos.coords.latitude,pos.coords.longitude]);
+        if (dist > 50) {
+          current.lat = pos.coords.latitude;
+          current.lon = pos.coords.longitude;
+          refreshList();
+          drawRoute();
+        }
       }
-    }else{
-      lastWatchPos={lat,lon};
-    }
-  },err=>{console.error(err);alert('現在地トラッキング失敗');watchPosChk.checked=false;});
-}
-function stopWatch(){if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}}
-
-/* =============================================================
- * 6. マーカー描画（ポイント & 現在地）
- * ============================================================= */
-function drawMarkers(){markerLayer.clearLayers();
-  points.forEach((p,i)=>{
-    const icon=i===0?iconStart:(i===points.length-1?iconDest:iconVia);
-    L.marker([p.lat,p.lon],{icon}).bindPopup(p.name).addTo(markerLayer);
-  });
-  if(lastWatchPos){
-    const me = L.circleMarker([lastWatchPos.lat,lastWatchPos.lon],{radius:6,color:'#00f',fillColor:'#00f',fillOpacity:.8}).bindPopup('現在地');
-    me.addTo(markerLayer);
+    });
+  } else {
+    if (watchId) navigator.geolocation.clearWatch(watchId);
   }
-}
+};
 
-/* =============================================================
- * 7. ORS Directions 呼び出し（代替ルート含む）
- * ============================================================= */
-drawBtn.onclick=drawRoute;
+/* ===== 7. ORSルート描画 ===== */
+$('drawBtn').onclick = drawRoute;
 
 async function drawRoute(){
-  if(points.length<2){alert('2地点以上必要');return;}
-  progressStatus.textContent='ルート取得中...';
-  const coords=points.map(p=>[p.lon,p.lat]);
-  const profile=profileSelect.value;
-  let url=ORS_ROOT+`/v2/directions/${profile}/geojson`;
-  let body={coordinates:coords,extra_info:['steepness']};
-  // 2地点時のみ代替
-  const wantAlternatives=(points.length===2);
-  if(wantAlternatives){body.alternative_routes={target_count:3,share_factor:0.6,weight_factor:1.4};}
-  const r=await fetch(PROXY+url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':apiKey},body:JSON.stringify(body)});
-  if(!r.ok){alert('ORS error:'+r.status);progressStatus.textContent='';return;}
-  const gj=await r.json();
-  // gj.features: alt含め複数（=target_count）返る場合あり
-  let routes=gj.features||[]; if(!Array.isArray(routes))routes=[gj];
-  // スティープネス合計でソート
-  routes.forEach(rt=>{rt._steepScore=calcSteepnessScore(rt);});
-  routes.sort((a,b)=>a._steepScore-b._steepScore);
-  const best=routes[0];
-  const worst=routes[routes.length-1];
-  currentRouteData=best;currentRouteDataAlt=wantAlternatives?worst:null;
-  drawRouteLayers(best,wantAlternatives?worst:null);
-  summarizeRoutes(best,wantAlternatives?worst:null);
-  if(restEnableChk.checked){await insertRests(best);}else{restLayer.clearLayers();}
-  buildDistChart(best);
-  dlCsvBtn.disabled=false;dlPngBtn.disabled=false;
-  progressStatus.textContent='';
+  if (points.length < 2) { alert('2地点以上必要'); return; }
+
+  const coords = points.map(p => [p.lon, p.lat]);
+  const profile = $('profileSelect').value;
+
+  clearLayers();
+
+  if (points.length === 2) {
+    // 代替ルート3本
+    const altUrl = `${ORS_ROOT}/v2/directions/${profile}/geojson?alternative_routes=${encodeURIComponent(JSON.stringify({target_count:3}))}`;
+    const res = await fetch(PROXY+altUrl,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':apiKey},
+      body: JSON.stringify({coordinates:coords,extra_info:["steepness"]})
+    });
+    if (!res.ok) return alert('ORS error');
+    const data = await res.json();
+    const routes = data.features;
+    let bestIdx = 0;
+    let bestScore = Infinity;
+    routes.forEach((r,i)=>{
+      const score = calcSteepnessScore(r.properties.extras.steepness.values);
+      if(score < bestScore){bestScore=score; bestIdx=i;}
+    });
+    routes.forEach((r,i)=>{
+      const style = (i===bestIdx)?{color:'#00f',weight:5}:
+                     {color:'#f00',weight:4,dashArray:'5,5'};
+      L.geoJSON(r,{style}).addTo(map);
+    });
+    showSummary(routes);
+    drawDistanceChart(routes[bestIdx]);
+    await insertRestStops(routes[bestIdx]);
+  } else {
+    // 単一路線
+    const url = `${ORS_ROOT}/v2/directions/${profile}/geojson`;
+    const res = await fetch(PROXY+url,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':apiKey},
+      body: JSON.stringify({coordinates:coords,extra_info:["steepness"]})
+    });
+    const data = await res.json();
+    const route = data.features[0];
+    L.geoJSON(route,{style:{color:'#00f',weight:5}}).addTo(map);
+    showSummary([route]);
+    drawDistanceChart(route);
+    await insertRestStops(route);
+  }
+
+  // 出発・目的・経由地マーカー
+  points.forEach((p,i)=>{
+    const iconUrl = (i===0)?'https://maps.gstatic.com/mapfiles/ms2/micons/green-dot.png':
+                      (i===points.length-1)?'https://maps.gstatic.com/mapfiles/ms2/micons/red-dot.png':
+                      'https://maps.gstatic.com/mapfiles/ms2/micons/blue-dot.png';
+    L.marker([p.lat,p.lon],{icon:new L.Icon({iconUrl,iconSize:[32,32],iconAnchor:[16,32]})}).addTo(map);
+  });
 }
 
-function drawRouteLayers(best,alt){
-  if(routeLayerMain){map.removeLayer(routeLayerMain);}if(routeLayerAlt){map.removeLayer(routeLayerAlt);} 
-  routeLayerMain=L.geoJSON(best,{style:{color:'#09f',weight:6}}).addTo(map);
-  if(alt){routeLayerAlt=L.geoJSON(alt,{style:{color:'#f00',weight:4,dashArray:'6 8'}}).addTo(map);}else{routeLayerAlt=null;}
-  map.fitBounds(routeLayerMain.getBounds());
+/* ===== 8. 坂スコア算出 ===== */
+function calcSteepnessScore(steepValues){
+  // steepValues: [[index, class], ...]
+  return steepValues.reduce((acc,cur)=> acc + Math.abs(cur[1]),0);
 }
 
-/* =============================================================
- * 8. Steepness Score
- *    ORS extras.steepness => [[fromIdx,toIdx,class],...]
- *    class: -5..5 の勾配カテゴリ。上り/下りとも絶対値で積分。
- * ============================================================= */
-function calcSteepnessScore(route){
-  const extras=route.properties?.extras?.steepness?.values||[];
-  let score=0;
-  for(const [s,e,cls] of extras){score+=Math.abs(cls)*(e-s);} // 区間長さ×絶対値
-  return score;
-}
+/* ===== 9. 休憩地点挿入 ===== */
+async function insertRestStops(route){
+  if (!route || !$('restInt').value) return;
+  const intervalMin = +$('restInt').value;
+  const coords = route.geometry.coordinates;
+  const times = [];
+  const speed = 15/3.6; // 15km/h → m/s仮定
+  let totalDist=0;
+  for(let i=1;i<coords.length;i++){
+    const d = L.latLng(coords[i-1][1],coords[i-1][0])
+               .distanceTo([coords[i][1],coords[i][0]]);
+    totalDist+=d;
+    times[i]= totalDist / speed;
+  }
+  const totalTime = times[times.length-1];
+  const restTimes = [];
+  for(let t=intervalMin*60; t<totalTime; t+=intervalMin*60){
+    restTimes.push(t);
+  }
 
-/* =============================================================
- * 9. 休憩挿入
- * ============================================================= */
-restEnableChk.onchange=()=>{restCtl.classList.toggle('hidden',!restEnableChk.checked);};
+  restLayer = L.layerGroup().addTo(map);
+  $('progressStatus').textContent = '休憩検索中…';
 
-async function insertRests(route){
-  restLayer.clearLayers();
-  const intervalMin=+timeIntEl.value||60;
-  // ルート時間配列（各頂点まで累積秒）
-  const {cumDistKm,cumTimeMin,coordsLL}=buildCumArrays(route);
-  const totalMin=cumTimeMin[cumTimeMin.length-1];
-  const targets=[];
-  for(let t=intervalMin;t<totalMin;t+=intervalMin){targets.push(t);} // 末端前まで
-  progressStatus.textContent=`休憩探索 0/${targets.length}`;
-  for(let i=0;i<targets.length;i++){
-    const tgt=targets[i];
-    // 最も近い時刻の頂点 idx
-    let bestIdx=0,bestDiff=Infinity;
-    for(let j=0;j<cumTimeMin.length;j++){
-      const diff=Math.abs(cumTimeMin[j]-tgt);
-      if(diff<bestDiff){bestDiff=diff;bestIdx=j;}
+  for(const rt of restTimes){
+    // 最も近いインデックス
+    let idx=0;
+    let diff=Infinity;
+    for(let i=0;i<times.length;i++){
+      const d = Math.abs(times[i]-rt);
+      if(d<diff){diff=d; idx=i;}
     }
-    const baseCoord=coordsLL[bestIdx]; // [lat,lon]
-    const poi=await fetchRestPOI(baseCoord);
-    if(poi){
-      const dT=(cumTimeMin[bestIdx]-tgt).toFixed(1);
-      const dD=(cumDistKm[bestIdx]-(tgt/totalMin)*cumDistKm[cumDistKm.length-1]).toFixed(1); // 粗い距離ズレ
-      const name=(poi.properties?.name)||'POI';
-      const catId=poi.properties?.category_ids?.[0];
-      const catName=catIdToLabel(catId);
-      const popup=`${name}<br>${catName}<br>Δt:${dT}分 Δd:${dD}km`;
-      L.marker([poi.geometry.coordinates[1],poi.geometry.coordinates[0]],{icon:iconPOI}).bindPopup(popup).addTo(restLayer);
-      // points への挿入? => 休憩は仮想経由地として表示のみ（既存 pts を変えたくないので）
-    }else{
-      // 仮休憩
-      const popup=`休憩（候補なし）<br>予定:${tgt}分`; 
-      L.marker(baseCoord,{icon:iconPOIGray}).bindPopup(popup).addTo(restLayer);
+    const target = coords[idx];
+    const pois = await fetchRestPOI(target);
+    if(pois.length>0){
+      pois.forEach(f=>{
+        L.marker([f.geometry.coordinates[1],f.geometry.coordinates[0]],{
+          icon:new L.Icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/orange-dot.png',
+          iconSize:[32,32],iconAnchor:[16,32]})
+        }).bindPopup(`${f.properties.name||'POI'} / ${f.properties.category} / Δ${Math.round(diff/60)}分`)
+          .addTo(restLayer);
+      });
+    } else {
+      L.marker([target[1],target[0]],{
+        icon:new L.Icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/ltblue-dot.png',
+        iconSize:[32,32],iconAnchor:[16,32]})
+      }).bindPopup(`休憩候補なし / Δ${Math.round(diff/60)}分`)
+        .addTo(restLayer);
     }
-    progressStatus.textContent=`休憩探索 ${i+1}/${targets.length}`;
+    $('progressStatus').textContent = `休憩探索 ${rt/60}分地点完了`;
   }
-  progressStatus.textContent='';
+  $('progressStatus').textContent = '休憩探索完了';
+}
+async function fetchRestPOI(coord){
+  const url = PROXY + ORS_ROOT + '/pois';
+  const body = {
+    request:'pois',
+    geometry:{geojson:{type:'Point',coordinates:coord},buffer:REST_RADIUS},
+    filters:{category_ids:REST_POI_IDS},
+    limit:5
+  };
+  const res = await fetch(url,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':apiKey},
+    body:JSON.stringify(body)
+  });
+  if(!res.ok) return [];
+  return (await res.json()).features || [];
 }
 
-/* 休憩POI 検索（半径1km） */
-async function fetchRestPOI([lat,lon]){
-  const body={request:'pois',geometry:{geojson:{type:'Point',coordinates:[lon,lat]},buffer:1000},filters:{category_ids:POI_REST_IDS},limit:1};
-  const url=PROXY+ORS_ROOT+'/pois';
-  try{
-    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':apiKey},body:JSON.stringify(body)});
-    if(!r.ok)return null;const js=await r.json();return js.features?.[0]||null;
-  }catch(e){console.error(e);return null;}
-}
-
-function catIdToLabel(id){
-  switch(id){case 533:return'コンビニ';case 532:return'スーパー';case 414:return'道の駅';default:return'POI';}
-}
-
-/* =============================================================
- * 10. ルート概要表示
- * ============================================================= */
-function summarizeRoutes(best,alt){
-  const bestSum=best.properties?.summary||{}; // {distance(m),duration(s)}
-  const distKm=(bestSum.distance||0)/1000;
-  const durMin=(bestSum.duration||0)/60;
-  let html=`<b>メインルート</b> 距離: ${distKm.toFixed(1)} km / 時間: ${durMin.toFixed(0)} 分`;
-  if(alt){
-    const altSum=alt.properties?.summary||{};
-    const distKmA=(altSum.distance||0)/1000;
-    const durMinA=(altSum.duration||0)/60;
-    const diffD=(distKmA-distKm).toFixed(1);
-    const diffT=(durMinA-durMin).toFixed(0);
-    const bestSteep=currentRouteData?currentRouteData._steepScore:0;
-    const altSteep=currentRouteDataAlt?currentRouteDataAlt._steepScore:0;
-    const dSteep=(altSteep-bestSteep).toFixed(0);
-    html+=`<br><b>坂多ルート比較:</b> +${diffD} km / +${diffT} 分 / スティープ差 +${dSteep}`;
+/* ===== 10. サマリー表示 ===== */
+function showSummary(routes){
+  if(!routes||routes.length===0) return;
+  const r = routes[0].properties.summary;
+  let html = `距離: ${(r.distance/1000).toFixed(1)} km / 時間: ${(r.duration/60).toFixed(0)} 分`;
+  if(routes.length>1){
+    const r2 = routes.find((_,i)=>i!==0).properties.summary;
+    html += `<br>坂多ルート比較: ${(r2.distance/1000).toFixed(1)} km / ${(r2.duration/60).toFixed(0)} 分`;
   }
-  summaryBox.innerHTML=html;
+  $('summary').innerHTML = html;
 }
 
-/* =============================================================
- * 11. 距離配列作成 & グラフ
- * ============================================================= */
-function buildCumArrays(route){
-  // geometry.coordinates => [lon,lat]
-  const coordsLonLat=route.geometry.coordinates;
-  const coordsLL=coordsLonLat.map(c=>[c[1],c[0]]);
-  const cumDistKm=[0];
-  for(let i=1;i<coordsLL.length;i++){
-    cumDistKm[i]=cumDistKm[i-1]+calcHaversine(coordsLL[i-1][0],coordsLL[i-1][1],coordsLL[i][0],coordsLL[i][1]);
+/* ===== 11. 区間距離グラフ＋PNG/CSV ===== */
+function drawDistanceChart(route){
+  if(!route) return;
+  const coords = route.geometry.coordinates;
+  const distArr = [];
+  for(let i=1;i<coords.length;i++){
+    const d = L.latLng(coords[i-1][1],coords[i-1][0])
+               .distanceTo([coords[i][1],coords[i][0]]);
+    distArr.push(d);
   }
-  // 時間配列: 線形補間（全体時間を距離比で割当）
-  const totalS=route.properties?.summary?.duration||0;
-  const totalKm=cumDistKm[cumDistKm.length-1];
-  const cumTimeMin=cumDistKm.map(d=> (totalS*(d/totalKm))/60 );
-  return{cumDistKm,cumTimeMin,coordsLL};
+  const ctx = $('distanceChart').getContext('2d');
+  if(window.distChart) window.distChart.destroy();
+  window.distChart = new Chart(ctx,{
+    type:'bar',
+    data:{labels:distArr.map((_,i)=>i+1),datasets:[{label:'区間距離(m)',data:distArr}]},
+    options:{responsive:true}
+  });
+  $('downloadPng').onclick=()=>{
+    const a = document.createElement('a');
+    a.href = window.distChart.toBase64Image();
+    a.download = `距離分布_${new Date().toISOString().split('T')[0]}.png`;
+    a.click();
+  };
+  $('downloadCsv').onclick=()=>{
+    const mean = distArr.reduce((a,b)=>a+b,0)/distArr.length;
+    const mse  = distArr.reduce((a,b)=>a+(b-mean)**2,0)/distArr.length;
+    let csv = '区間,距離(m)\n';
+    distArr.forEach((d,i)=>{csv += `${i+1},${d}\n`;});
+    csv += `平均,${mean}\nMSE,${mse}\n`;
+    const blob = new Blob(["\uFEFF"+csv],{type:'text/csv'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `ルートスコア_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
 }
 
-function buildDistChart(route){
-  const {cumDistKm}=buildCumArrays(route);
-  const segDistKm=[];for(let i=1;i<cumDistKm.length;i++){segDistKm.push(cumDistKm[i]-cumDistKm[i-1]);}
-  const labels=segDistKm.map((_,i)=>i+1);
-  const ctx=$('distChart').getContext('2d');
-  if(chart){chart.destroy();}
-  chart=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'区間距離(km)',data:segDistKm}]},options:{scales:{x:{title:{display:true,text:'区間'}},y:{title:{display:true,text:'距離(km)'}}}}});
+/* ===== 12. レイヤークリア ===== */
+function clearLayers(){
+  if(routeLayer) map.removeLayer(routeLayer);
+  if(poiLayer)   map.removeLayer(poiLayer);
+  if(restLayer)  map.removeLayer(restLayer);
 }
-
-/* =============================================================
- * 12. CSV 出力 (区間距離/平均/ MSE)
- * ============================================================= */
-function buildCsv(route){
-  const {cumDistKm}=buildCumArrays(route);
-  const seg=[];for(let i=1;i<cumDistKm.length;i++){seg.push(cumDistKm[i]-cumDistKm[i-1]);}
-  const mean=seg.reduce((a,b)=>a+b,0)/seg.length;
-  const mse=seg.reduce((a,b)=>a+Math.pow(b-mean,2),0)/seg.length;
-  let csv='index,segment_km,mean_km,mse\n';
-  seg.forEach((d,i)=>{csv+=`${i+1},${d.toFixed(5)},${mean.toFixed(5)},${mse.toFixed(5)}\n`;});
-  const bom='\uFEFF';
-  return bom+csv;
-}
-
-dlCsvBtn.onclick=()=>{
-  if(!currentRouteData)return;
-  const csv=buildCsv(currentRouteData);
-  const blob=new Blob([csv],{type:'text/csv'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  const dt=new Date().toISOString().slice(0,10);
-  a.href=url;a.download=`ルートスコア_${dt}.csv`;a.click();
-  URL.revokeObjectURL(url);
-};
-
-dlPngBtn.onclick=()=>{
-  if(!chart)return;const url=chart.toBase64Image('image/png',1);
-  const a=document.createElement('a');
-  const dt=new Date().toISOString().slice(0,10);
-  a.href=url;a.download=`距離分布_${dt}.png`;a.click();
-};
-
-/* =============================================================
- * 13. 便利関数（距離計算）
- * ============================================================= */
-function calcHaversine(lat1,lon1,lat2,lon2){
-  const R=6371; // km
-  const toRad=d=>d*Math.PI/180;
-  const dLat=toRad(lat2-lat1);
-  const dLon=toRad(lon2-lon1);
-  const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
-  const c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
-  return R*c;
-}
-
-/* =============================================================
- * 14. 凡例
- * ============================================================= */
-function buildLegend(){
-  const lg=$('legend');
-  lg.innerHTML=`<b>凡例</b>`+
-    `<div><span class="lg-dot lg-blue"></span>出発地 (legend-blue)</div>`+
-    `<div><span class="lg-dot lg-red"></span>目的地 (legend-red)</div>`+
-    `<div><span class="lg-dot lg-via"></span>経由地</div>`+
-    `<div><span class="lg-dot lg-orange"></span>実POI休憩 (legend-orange)</div>`+
-    `<div><span class="lg-dot lg-gray"></span>仮休憩 (legend-gray)</div>`;
-}
-buildLegend();
-
-/* =============================================================
- * 15. 初回現在地取得（nearOnlyで利用）
- * ============================================================= */
-getCurrentPosition(false);
-
 </script>
 </body>
 </html>
