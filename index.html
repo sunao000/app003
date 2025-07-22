@@ -136,43 +136,25 @@ async function fetchRoute(body,profile){
 }
 
 /******************* 7. ルート描画 *******************/
-async function drawRoutes(){
-  if (pts.length < 2){ alert('2地点以上登録してください'); return; }
-  if (!map){ alert('地図が初期化されていません'); return; }
+async function drawRoutes(){if(pts.length<2){alert('2地点以上登録してください');return;}
+  if(!map){alert('地図が初期化されていません');return;}
 
-  /* --- 既存レイヤーをクリア --- */
-  Object.values(routeLayers).forEach(l => { if (l) map.removeLayer(l); });
-  routeLayers = { short:null, fast:null, slope:null };
+  // レイヤークリア
+  Object.values(routeLayers).forEach(l=>{if(l)map.removeLayer(l);});routeLayers={short:null,fast:null,slope:null};
+  if(markerLayer){map.removeLayer(markerLayer);}markerLayer=L.layerGroup().addTo(map);
 
-  if (markerLayer) map.removeLayer(markerLayer);
-  markerLayer = L.layerGroup().addTo(map);
+  // マーカー追加
+  pts.forEach(p=>{markerLayer.addLayer(L.marker([p.lat,p.lon],{icon:p.type==='start'?ICONS.start:p.type==='goal'?ICONS.goal:ICONS.via}).bindTooltip(p.name));});
 
-  /* --- ピン表示 (出発・経由・目的地) --- */
-  pts.forEach(p => {
-    const icon = p.type === 'start' ? ICONS.start :
-                 p.type === 'goal'  ? ICONS.goal  : ICONS.via;
-    markerLayer.addLayer(
-      L.marker([p.lat, p.lon], { icon }).bindTooltip(p.name)
-    );
-  });
-
-  /* --- ORS ルート取得 --- */
-  const profile = $('profileSelect').value;             // cycling-road / cycling-regular
-  const coords  = pts.map(p => [p.lon, p.lat]);
-  const base    = { coordinates: coords,
-                    elevation  : true,
-                    extra_info : ['steepness'] };
+  const profile=$('profileSelect').value;
+  const coords=pts.map(p=>[p.lon,p.lat]);
+  const base={coordinates:coords,elevation:true,extra_info:['steepness']};
 
   try{
-    /* ① 最短距離ルート ---------------------------------- */
-    const shortest = await fetchRoute(
-      { ...base, preference: 'shortest' }, profile
-    );
-    routeLayers.short = L.geoJSON(shortest.features[0], {
-      style:{ color:'#00a000', weight:6 }
-    }).addTo(map);
-
-    /* ② 最速時間ルート ---------------------------------- */
+    // 最短距離
+    const shortest=await fetchRoute({...base,preference:'shortest'},profile);
+    routeLayers.short=L.geoJSON(shortest.features[0],{style:{color:'#00a000',weight:6}}).addTo(map);
+        /* ② 最速時間 ---------------------------------------- */
     const fastest = await fetchRoute(
       { ...base, preference: 'fastest' }, profile
     );
@@ -180,30 +162,31 @@ async function drawRoutes(){
       style:{ color:'#0066ff', weight:6, dashArray:'4 4' }
     }).addTo(map);
 
-    /* ③ 勾配考慮ルート ---------------------------------- */
+    /* ③ 勾配考慮（alternative から最も平坦）-------------- */
     const alt = await fetchRoute(
       { ...base,
-        preference        : 'shortest',
-        alternative_routes: { target_count:3, share_factor:0.6, weight_factor:1.4 }
+        preference        :'shortest',
+        alternative_routes:{ target_count:3, share_factor:0.6, weight_factor:1.4 }
       }, profile
     );
     let best = alt.features[0], min = steepSum(best);
-    alt.features.forEach(f => { const s = steepSum(f); if (s < min){ min=s; best=f; }});
-
+    alt.features.forEach(f => {
+      const s = steepSum(f);
+      if (s < min){ min = s; best = f; }
+    });
     routeLayers.slope = L.geoJSON(best, {
       style:{ color:'#ff9900', weight:6, opacity:0.9 }
     }).addTo(map);
 
-    /* --- 地図を全ルート & マーカーにフィット --- */
-    const group = L.featureGroup([
-      markerLayer,
-      routeLayers.short,
-      routeLayers.fast,
-      routeLayers.slope
-    ]);
-    map.fitBounds(group.getBounds().pad(0.1));
+    /* --- 地図フィット ----------------------------------- */
+    const bounds = new L.LatLngBounds();
+    markerLayer.eachLayer(l => { if (l.getLatLng) bounds.extend(l.getLatLng()); });
+    [routeLayers.short, routeLayers.fast, routeLayers.slope].forEach(l => {
+      if (l && l.getBounds) bounds.extend(l.getBounds());
+    });
+    if (bounds.isValid()) map.fitBounds(bounds.pad(0.1));
 
-    /* --- サマリー出力 --- */
+    /* --- サマリー表示 ----------------------------------- */
     const s1 = shortest.features[0].properties.summary;
     const s2 = fastest .features[0].properties.summary;
     const s3 = best    .properties.summary;
@@ -222,3 +205,5 @@ async function drawRoutes(){
 </script>
 </body>
 </html>
+
+
