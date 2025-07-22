@@ -59,7 +59,7 @@
 
 <script>
 /******************* 0. 定数 *******************/
-const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9';  // ★ OpenRouteService API キーを入力（地図表示のみなら空でも可）
+const ORS_KEY  = '';  // ★ OpenRouteService API キーを入力（地図表示のみなら空でも可）
 const ORS_ROOT = 'https://api.openrouteservice.org';
 const PROXY    = 'https://corsproxy.io/?';
 
@@ -68,7 +68,20 @@ const $ = id => document.getElementById(id);
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
 function formatDist(m){return (m/1000).toFixed(2)+' km';}
 function formatDur(s){return Math.round(s/60)+' 分';}
-function steepSum(feature){let sum=0;feature.properties.extras.steepness.forEach(e=>{sum+=Math.abs(e[2]);});return sum;}
+function steepSum(feature){
+  const ex = feature.properties && feature.properties.extras;
+  if(!ex || !ex.steepness){return Infinity;} // 勾配情報が無い場合は極大値
+  const data = ex.steepness;
+  // 形式 1: [[idx0,idx1,grade], ...]
+  if(Array.isArray(data)){
+    return data.reduce((s,e)=>s+Math.abs(e[2]??0),0);
+  }
+  // 形式 2: { values:[[idx0,idx1,grade], ...] }
+  if(Array.isArray(data.values)){
+    return data.values.reduce((s,e)=>s+Math.abs(e[2]??0),0);
+  }
+  return Infinity;
+}
 function icon(color){return new L.Icon({iconUrl:`https://maps.gstatic.com/mapfiles/ms2/micons/${color}-dot.png`,iconSize:[32,32],iconAnchor:[16,32]});}
 const ICONS={start:icon('green'),via:icon('blue'),goal:icon('red')};
 
@@ -123,7 +136,7 @@ async function fetchRoute(body,profile){
 }
 
 /******************* 7. ルート描画 *******************/
-async function drawRoutes(){                       // ← 呼び出しボタン
+async function drawRoutes(){
   if (pts.length < 2){ alert('2地点以上登録してください'); return; }
   if (!map){ alert('地図が初期化されていません'); return; }
 
@@ -134,7 +147,7 @@ async function drawRoutes(){                       // ← 呼び出しボタン
   if (markerLayer) map.removeLayer(markerLayer);
   markerLayer = L.layerGroup().addTo(map);
 
-  /* --- ピン（出発・経由・目的地） --- */
+  /* --- ピン表示 (出発・経由・目的地) --- */
   pts.forEach(p => {
     const icon = p.type === 'start' ? ICONS.start :
                  p.type === 'goal'  ? ICONS.goal  : ICONS.via;
@@ -144,34 +157,34 @@ async function drawRoutes(){                       // ← 呼び出しボタン
   });
 
   /* --- ORS ルート取得 --- */
-  const profile = $('profileSelect').value;            // cycling-road / cycling-regular
+  const profile = $('profileSelect').value;             // cycling-road / cycling-regular
   const coords  = pts.map(p => [p.lon, p.lat]);
-  const baseBody= { coordinates: coords,
-                    elevation   : true,
-                    extra_info  : ['steepness'] };
+  const base    = { coordinates: coords,
+                    elevation  : true,
+                    extra_info : ['steepness'] };
 
   try{
-    /* ① 最短距離 ---------------------------------------- */
+    /* ① 最短距離ルート ---------------------------------- */
     const shortest = await fetchRoute(
-      { ...baseBody, preference: 'shortest' }, profile
+      { ...base, preference: 'shortest' }, profile
     );
     routeLayers.short = L.geoJSON(shortest.features[0], {
       style:{ color:'#00a000', weight:6 }
     }).addTo(map);
 
-    /* ② 最速時間 ---------------------------------------- */
+    /* ② 最速時間ルート ---------------------------------- */
     const fastest = await fetchRoute(
-      { ...baseBody, preference: 'fastest' }, profile
+      { ...base, preference: 'fastest' }, profile
     );
     routeLayers.fast = L.geoJSON(fastest.features[0], {
       style:{ color:'#0066ff', weight:6, dashArray:'4 4' }
     }).addTo(map);
 
-    /* ③ 勾配考慮（alternative から最も平坦） ------------ */
+    /* ③ 勾配考慮ルート ---------------------------------- */
     const alt = await fetchRoute(
-      { ...baseBody,
-        preference        :'shortest',
-        alternative_routes:{ target_count:3, share_factor:0.6, weight_factor:1.4 }
+      { ...base,
+        preference        : 'shortest',
+        alternative_routes: { target_count:3, share_factor:0.6, weight_factor:1.4 }
       }, profile
     );
     let best = alt.features[0], min = steepSum(best);
@@ -181,7 +194,7 @@ async function drawRoutes(){                       // ← 呼び出しボタン
       style:{ color:'#ff9900', weight:6, opacity:0.9 }
     }).addTo(map);
 
-    /* --- 地図を全要素にフィット --- */
+    /* --- 地図を全ルート & マーカーにフィット --- */
     const group = L.featureGroup([
       markerLayer,
       routeLayers.short,
@@ -190,10 +203,10 @@ async function drawRoutes(){                       // ← 呼び出しボタン
     ]);
     map.fitBounds(group.getBounds().pad(0.1));
 
-    /* --- サマリー表示 --- */
+    /* --- サマリー出力 --- */
     const s1 = shortest.features[0].properties.summary;
     const s2 = fastest .features[0].properties.summary;
-    const s3 = best     .properties.summary;
+    const s3 = best    .properties.summary;
 
     $('routeInfo').innerHTML =
       `<b>最短</b> ${formatDist(s1.distance)} / ${formatDur(s1.duration)}<br>`+
@@ -205,7 +218,7 @@ async function drawRoutes(){                       // ← 呼び出しボタン
     alert('ルート取得に失敗しました（'+ err.message +'）');
   }
 }
-/* ====== ここまで drawRoutes() ====== */
+/* ===== drawRoutes() ここまで ===== */
 </script>
 </body>
 </html>
