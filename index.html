@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>自転車ルート比較ツール（最短・最速・勾配）</title>
 
-  <!-- 外部ライブラリ -->
+  <!-- ライブラリ -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
@@ -40,6 +40,10 @@
     <option value="cycling-regular">自転車（一般）</option>
   </select>
   <button id="drawBtn">ルート表示</button>
+  <!-- レイヤー表示切替 -->
+  <label><input type="checkbox" id="chkShortest" checked> 最短</label>
+  <label><input type="checkbox" id="chkFastest" checked> 最速</label>
+  <label><input type="checkbox" id="chkSlope"   checked> 勾配</label>
 </div>
 
 <ul id="searchResults" hidden></ul>
@@ -59,151 +63,160 @@
 
 <script>
 /******************* 0. 定数 *******************/
-const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9';  // ★ OpenRouteService API キーを入力（地図表示のみなら空でも可）
+const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9';         // ★ OpenRouteService API キー
 const ORS_ROOT = 'https://api.openrouteservice.org';
 const PROXY    = 'https://corsproxy.io/?';
 
 /******************* 1. ユーティリティ *******************/
 const $ = id => document.getElementById(id);
-const sleep = ms => new Promise(r=>setTimeout(r,ms));
 function formatDist(m){return (m/1000).toFixed(2)+' km';}
 function formatDur(s){return Math.round(s/60)+' 分';}
 function steepSum(feature){
-  const ex = feature.properties && feature.properties.extras;
-  if(!ex || !ex.steepness){return Infinity;} // 勾配情報が無い場合は極大値
-  const data = ex.steepness;
-  // 形式 1: [[idx0,idx1,grade], ...]
-  if(Array.isArray(data)){
-    return data.reduce((s,e)=>s+Math.abs(e[2]??0),0);
-  }
-  // 形式 2: { values:[[idx0,idx1,grade], ...] }
-  if(Array.isArray(data.values)){
-    return data.values.reduce((s,e)=>s+Math.abs(e[2]??0),0);
-  }
-  return Infinity;
+  const ex=feature?.properties?.extras;
+  if(!ex||!ex.steepness)return Infinity;
+  const arr=Array.isArray(ex.steepness)?ex.steepness:ex.steepness.values;
+  return arr.reduce((sum,e)=>sum+Math.abs(e[2]??0),0);
 }
 function icon(color){return new L.Icon({iconUrl:`https://maps.gstatic.com/mapfiles/ms2/micons/${color}-dot.png`,iconSize:[32,32],iconAnchor:[16,32]});}
 const ICONS={start:icon('green'),via:icon('blue'),goal:icon('red')};
 
 /******************* 2. 状態 *******************/
-let pts=[]; // {name,lat,lon,type}
+let pts=[];
 let map;
 let routeLayers={short:null,fast:null,slope:null};
 let markerLayer=null;
 
 /******************* 3. 初期化 *******************/
 window.addEventListener('DOMContentLoaded',()=>{
-  // Leaflet 初期化（try/catch でエラー確認）
-  try{
-    map=L.map('map').setView([35.681236,139.767125],13);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'©OpenStreetMap'}).addTo(map);
-  }catch(e){console.error('Leaflet init error:',e);alert('地図ライブラリの読み込みに失敗しました');return;}
+  map=L.map('map').setView([35.681236,139.767125],13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'©OpenStreetMap'}).addTo(map);
 
-  // イベント
-  $('searchBtn').onclick=()=>{const q=$('placeInput').value.trim();if(q)geoSearch(q);}  
-  $('locBtn').onclick=addCurrentPos;
-  $('drawBtn').onclick=drawRoutes;
+  $('searchBtn').onclick = ()=>{const q=$('placeInput').value.trim();if(q)geoSearch(q);};
+  $('locBtn').onclick    = addCurrentPos;
+  $('drawBtn').onclick   = drawRoutes;
+  ['chkShortest','chkFastest','chkSlope'].forEach(id=>$(id).onchange=updateLayerVisibility);
   initSortable();
 });
 
-/******************* 4. 検索関連 *******************/
-async function geoSearch(q){let url=`https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(q)}`;
-  if($('nearbyOnly').checked&&navigator.geolocation){try{const pos=await getCurrentPosition();const d=0.05;url+=`&viewbox=${pos.coords.longitude-d},${pos.coords.latitude+d},${pos.coords.longitude+d},${pos.coords.latitude-d}&bounded=1`;}
-  catch(e){console.warn('Geolocation denied');}}
-  const res=await fetch(url);const js=await res.json();renderSearchResults(js);}  
-function renderSearchResults(arr){const ul=$('searchResults');ul.innerHTML='';if(!arr.length){ul.hidden=true;return;}ul.hidden=false;
-  arr.forEach(o=>{const li=document.createElement('li');li.textContent=o.display_name;li.onclick=()=>{addPoint({name:o.display_name,lat:+o.lat,lon:+o.lon});ul.hidden=true;$('placeInput').value='';};ul.appendChild(li);});}
+/******************* 4. Nominatim 検索 *******************/
+async function geoSearch(q){
+  const res=await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(q)}`);
+  renderSearchResults(await res.json());
+}
+function renderSearchResults(arr){
+  const ul=$('searchResults');ul.innerHTML='';
+  if(!arr.length){ul.hidden=true;return;}
+  ul.hidden=false;
+  arr.forEach(o=>{
+    const li=document.createElement('li');li.textContent=o.display_name;
+    li.onclick=()=>{addPoint({name:o.display_name,lat:+o.lat,lon:+o.lon});ul.hidden=true;$('placeInput').value='';};
+    ul.appendChild(li);
+  });
+}
 
-/******************* 5. 地点管理 *******************/
-function addPoint(p){p.type=pts.length===0?'start':'';pts.forEach(pt=>{if(pt.type==='goal')pt.type='via';});pts.push(p);if(pts.length>1)pts[pts.length-1].type='goal';refreshList();}
-function refreshList(){const ul=$('pointList');ul.innerHTML='';pts.forEach((p,i)=>{
-  const li=document.createElement('li');li._idx=i;
-  const span=document.createElement('span');span.textContent=p.name;li.appendChild(span);
-  const del=document.createElement('button');del.textContent='×';del.className='del';del.onclick=e=>{e.stopPropagation();pts.splice(i,1);if(pts[0])pts[0].type='start';if(pts.length>1)pts[pts.length-1].type='goal';refreshList();};li.appendChild(del);
-  ul.appendChild(li);
-});}
-function initSortable(){new Sortable($('pointList'),{animation:150,handle:'span',onEnd:()=>{pts=Array.from($('pointList').children).map(li=>pts[li._idx]);if(pts[0])pts[0].type='start';if(pts.length>1)pts[pts.length-1].type='goal';refreshList();}});}
-async function addCurrentPos(){try{const pos=await getCurrentPosition();addPoint({name:'現在地',lat:pos.coords.latitude,lon:pos.coords.longitude});}catch(e){alert('現在地を取得できません');}}
-function getCurrentPosition(){return new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej));}
+/******************* 5. 地点リスト操作 *******************/
+function addPoint(p){
+  p.type = pts.length===0?'start':'';
+  pts.forEach(pt=>{if(pt.type==='goal')pt.type='via';});
+  pts.push(p);
+  if(pts.length>1)pts[pts.length-1].type='goal';
+  refreshList();
+}
+function refreshList(){
+  const ul=$('pointList');ul.innerHTML='';
+  pts.forEach((p,i)=>{
+    const li=document.createElement('li');li._idx=i;
+    li.innerHTML=`<span>${p.name}</span>`;
+    const del=document.createElement('button');del.textContent='×';del.className='del';
+    del.onclick=e=>{e.stopPropagation();pts.splice(i,1);if(pts[0])pts[0].type='start';if(pts.length>1)pts[pts.length-1].type='goal';refreshList();};
+    li.appendChild(del);ul.appendChild(li);
+  });
+}
+function initSortable(){
+  new Sortable($('pointList'),{
+    animation:150,
+    handle:'span',
+    onEnd:()=>{pts=Array.from($('pointList').children).map(li=>pts[li._idx]);if(pts[0])pts[0].type='start';if(pts.length>1)pts[pts.length-1].type='goal';refreshList();}
+  });
+}
+async function addCurrentPos(){
+  navigator.geolocation.getCurrentPosition(pos=>{
+    addPoint({name:'現在地',lat:pos.coords.latitude,lon:pos.coords.longitude});
+  },()=>alert('現在地を取得できません'));
+}
 
 /******************* 6. ORS 呼び出し *******************/
 async function fetchRoute(body,profile){
-  const url=`${PROXY}${ORS_ROOT}/v2/directions/${profile}/geojson`;
-  const opt={method:'POST',headers:{'Content-Type':'application/json','Authorization':ORS_KEY},body:JSON.stringify(body)};
-  const r=await fetch(url,opt);
-  if(!r.ok){throw new Error('ORS '+r.status);}
-  return r.json();
+  const res=await fetch(`${PROXY}${ORS_ROOT}/v2/directions/${profile}/geojson`,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':ORS_KEY},
+    body:JSON.stringify(body)
+  });
+  if(!res.ok) throw new Error(res.status);
+  return res.json();
 }
 
 /******************* 7. ルート描画 *******************/
-async function drawRoutes(){if(pts.length<2){alert('2地点以上登録してください');return;}
-  if(!map){alert('地図が初期化されていません');return;}
+async function drawRoutes(){
+  if(pts.length<2){alert('2地点以上登録してください');return;}
 
-  // レイヤークリア
-  Object.values(routeLayers).forEach(l=>{if(l)map.removeLayer(l);});routeLayers={short:null,fast:null,slope:null};
-  if(markerLayer){map.removeLayer(markerLayer);}markerLayer=L.layerGroup().addTo(map);
+  // レイヤー初期化
+  Object.values(routeLayers).forEach(l=>{if(l)map.removeLayer(l);});
+  routeLayers={short:null,fast:null,slope:null};
+  if(markerLayer)map.removeLayer(markerLayer);
+  markerLayer=L.layerGroup().addTo(map);
 
-  // マーカー追加
-  pts.forEach(p=>{markerLayer.addLayer(L.marker([p.lat,p.lon],{icon:p.type==='start'?ICONS.start:p.type==='goal'?ICONS.goal:ICONS.via}).bindTooltip(p.name));});
+  // マーカー描画
+  pts.forEach(p=>{
+    const ic=p.type==='start'?ICONS.start: p.type==='goal'?ICONS.goal:ICONS.via;
+    markerLayer.addLayer(L.marker([p.lat,p.lon],{icon:ic}).bindTooltip(p.name));
+  });
 
   const profile=$('profileSelect').value;
   const coords=pts.map(p=>[p.lon,p.lat]);
   const base={coordinates:coords,elevation:true,extra_info:['steepness']};
 
   try{
-    // 最短距離
     const shortest=await fetchRoute({...base,preference:'shortest'},profile);
     routeLayers.short=L.geoJSON(shortest.features[0],{style:{color:'#00a000',weight:6}}).addTo(map);
-        /* ② 最速時間 ---------------------------------------- */
-    const fastest = await fetchRoute(
-      { ...base, preference: 'fastest' }, profile
-    );
-    routeLayers.fast = L.geoJSON(fastest.features[0], {
-      style:{ color:'#0066ff', weight:6, dashArray:'4 4' }
-    }).addTo(map);
 
-    /* ③ 勾配考慮（alternative から最も平坦）-------------- */
-    const alt = await fetchRoute(
-      { ...base,
-        preference        :'shortest',
-        alternative_routes:{ target_count:3, share_factor:0.6, weight_factor:1.4 }
-      }, profile
-    );
-    let best = alt.features[0], min = steepSum(best);
-    alt.features.forEach(f => {
-      const s = steepSum(f);
-      if (s < min){ min = s; best = f; }
-    });
-    routeLayers.slope = L.geoJSON(best, {
-      style:{ color:'#ff9900', weight:6, opacity:0.9 }
-    }).addTo(map);
+    const fastest=await fetchRoute({...base,preference:'fastest'},profile);
+    routeLayers.fast=L.geoJSON(fastest.features[0],{style:{color:'#0066ff',weight:6,dashArray:'4 4'}}).addTo(map);
 
-    /* --- 地図フィット ----------------------------------- */
-    const bounds = new L.LatLngBounds();
-    markerLayer.eachLayer(l => { if (l.getLatLng) bounds.extend(l.getLatLng()); });
-    [routeLayers.short, routeLayers.fast, routeLayers.slope].forEach(l => {
-      if (l && l.getBounds) bounds.extend(l.getBounds());
-    });
-    if (bounds.isValid()) map.fitBounds(bounds.pad(0.1));
+    const alt=await fetchRoute({...base,preference:'shortest',alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.4}},profile);
+    let best=alt.features[0],min=steepSum(best);
+    alt.features.forEach(f=>{const s=steepSum(f);if(s<min){min=s;best=f;}});
+    routeLayers.slope=L.geoJSON(best,{style:{color:'#ff9900',weight:6,opacity:0.9}}).addTo(map);
 
-    /* --- サマリー表示 ----------------------------------- */
-    const s1 = shortest.features[0].properties.summary;
-    const s2 = fastest .features[0].properties.summary;
-    const s3 = best    .properties.summary;
+    updateLayerVisibility();
 
-    $('routeInfo').innerHTML =
-      `<b>最短</b> ${formatDist(s1.distance)} / ${formatDur(s1.duration)}<br>`+
-      `<b>最速</b> ${formatDist(s2.distance)} / ${formatDur(s2.duration)}<br>`+
-      `<b>勾配</b> ${formatDist(s3.distance)} / ${formatDur(s3.duration)}`;
+    // Bounds
+    const bounds=new L.LatLngBounds();
+    markerLayer.eachLayer(l=>{if(l.getLatLng)bounds.extend(l.getLatLng());});
+    [routeLayers.short,routeLayers.fast,routeLayers.slope].forEach(l=>{if(l&&l.getBounds)bounds.extend(l.getBounds());});
+    if(bounds.isValid())map.fitBounds(bounds.pad(0.1));
+
+    // サマリー
+    const s1=shortest.features[0].properties.summary,
+          s2=fastest.features[0].properties.summary,
+          s3=best    .properties.summary;
+    $('routeInfo').innerHTML=`<b>最短</b> ${formatDist(s1.distance)} / ${formatDur(s1.duration)}<br>`+
+                             `<b>最速</b> ${formatDist(s2.distance)} / ${formatDur(s2.duration)}<br>`+
+                             `<b>勾配</b> ${formatDist(s3.distance)} / ${formatDur(s3.duration)}`;
 
   }catch(err){
     console.error(err);
-    alert('ルート取得に失敗しました（'+ err.message +'）');
+    alert('ルート取得に失敗しました（'+err.message+'）');
   }
 }
-/* ===== drawRoutes() ここまで ===== */
+
+/******************* 8. 表示切り替え *******************/
+function updateLayerVisibility(){
+  toggle(routeLayers.short , $('chkShortest').checked);
+  toggle(routeLayers.fast  , $('chkFastest').checked);
+  toggle(routeLayers.slope , $('chkSlope').checked);
+  function toggle(layer,v){if(!layer)return;v?layer.addTo(map):map.removeLayer(layer);}
+}
 </script>
 </body>
 </html>
-
-
