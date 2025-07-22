@@ -194,8 +194,10 @@ async function pickRestStops(feature,interval){
         const idx=step.way_points[1], [lon,lat]=coords[idx];
         const poi=await searchPoiNear(lat,lon);
         if(poi){
-          const catId=POI_CATS.find(id=>poi.properties.category_ids.includes(id));
-          const prefix=CATEGORY_NAMES[catId]||'休憩';
+          const idsRaw = poi.properties.category_ids;
+          const idsArr = Array.isArray(idsRaw) ? idsRaw : (idsRaw != null ? [idsRaw] : []);
+          const catId  = POI_CATS.find(id=>idsArr.includes(id));
+          const prefix = CATEGORY_NAMES[catId] || '休憩';
           const nm=poi.properties.name?`${prefix}: ${poi.properties.name}`:prefix;
           restStops.push({name:nm,lat:poi.geometry.coordinates[1],lon:poi.geometry.coordinates[0],isRest:true});
           acc=0;
