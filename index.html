@@ -196,9 +196,10 @@ async function pickRestStops(feature,interval){
         if(poi){
           const idsRaw = poi.properties.category_ids;
           const idsArr = Array.isArray(idsRaw) ? idsRaw : (idsRaw != null ? [idsRaw] : []);
-          const catId  = POI_CATS.find(id=>idsArr.includes(id));
-          const prefix = CATEGORY_NAMES[catId] || '休憩';
-          const nm=poi.properties.name?`${prefix}: ${poi.properties.name}`:prefix;
+          const catId  = POI_CATS.find(id => idsArr.includes(id));
+          const nm     = poi.properties.name            // 店舗名が取得できた場合
+                          ? poi.properties.name         // → そのまま表示
+                          : (CATEGORY_NAMES[catId] || '休憩地点');  // 無い場合はカテゴリ名で代用
           restStops.push({name:nm,lat:poi.geometry.coordinates[1],lon:poi.geometry.coordinates[0],isRest:true});
           acc=0;
         }
