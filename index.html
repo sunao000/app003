@@ -231,9 +231,28 @@ const isCloseToGoal = (lat,lon,th=CLOSE_TO_GOAL_M)=>{ const g=pts.at(-1); if(!g)
       body: JSON.stringify(body)
     });
     const text = await r.text();
-    let data=null; try{ data = JSON.parse(text); }catch(_){/* 非JSON */}
-    if(!r.ok){ throw new Error(`HTTP ${r.status} ${r.statusText}: ${text.slice(0,300)}`); }
-    if(data==null){ throw new Error(`Invalid JSON from server: ${text.slice(0,300)}`); }
+
+    // --- JSON パースを堅牢化（NaN → null 置換で再試行） ---
+    let data=null;
+    try{
+      data = JSON.parse(text);
+    }catch(_){
+      try{
+        const safe = text.replace(/NaN/g, 'null');
+        data = JSON.parse(safe);
+      }catch(_e){ /* 最終的に null のまま */ }
+    }
+
+    if(!r.ok){
+      // HTTP エラーは常に throw
+      throw new Error(`HTTP ${r.status} ${r.statusText}: ${text.slice(0,300)}`);
+    }
+
+    // API が JSON を返したがパース不能だった場合 → 空オブジェクトを返し、呼び出し側で対処
+    if(data==null){
+      console.warn('POST: JSON parse failed, returning empty object', {url, body, snippet:text.slice(0,120)});
+      return {};
+    }
     return data;
   }
 
