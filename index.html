@@ -404,7 +404,7 @@ const isCloseToGoal = (lat,lon,th=CLOSE_TO_GOAL_M)=>{ const g=pts.at(-1); if(!g)
     if(basis==='energy'){
       const {n, meanMin, meanKm, mseMin, mseKm, rmseMin, rmseKm, cvMin, cvKm, rows} = stats;
       let html = `<details open><summary>区間負荷の均一性（kJ/min・kJ/km）</summary>`+
-        `<div class="tips">区間ごとに <b>kJ/分</b> と <b>kJ/km</b> を計算。平均からの <b>MSE</b>・<b>RMSE</b>・<b>CV</b> を表示します。小さいほど均一です。</div>`+
+        `<div class="tips">区間ごとに <b>kJ/分</b> と <b>kJ/km</b> を計算  平均からの <b>MSE</b>・<b>RMSE</b>・<b>CV</b> を表示し、小さいほど均一</div>`+
         `<ul class="muted" style="margin:6px 0">`+
         `<li>N=${n}</li>`+
         `<li>平均: ${rd(meanMin,2)} kJ/min / ${rd(meanKm,2)} kJ/km</li>`+
