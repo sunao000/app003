@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>自転車ルート比較＋休憩（入口/出口＆各機能ON/OFF） v5.7.0</title>
+<title>自転車ルート比較＋休憩（入口/出口＆各機能ON/OFF） v5.7.1</title>
 
 <!-- ライブラリ -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
@@ -280,7 +280,7 @@ async function nearPoi(lat,lon,categoryIds){
       if(!r.ok) throw new Error();
       const d=await r.json();
       if(d.features?.length) return d.features[0];
-    }catch{}
+    }catch(e){}
   }
   return {geometry:{coordinates:[lon,lat]},properties:{name:'休憩'}};
 }
@@ -311,6 +311,12 @@ function findPointAtRouteD(coords, cum, targetD){
 }
 
 /* ===== 等間隔リサンプリング＆平滑化 ===== */
+// 窓幅を安全に“奇数”へ丸めるユーティリティ
+function toOddWindow(n){
+  const v = Math.max(1, Math.round(Number(n) || 0));
+  return (v % 2 === 1) ? v : v + 1;
+}
+
 function resampleByDistance(coords, stepM=25){
   const cum=buildCumDistArray(coords);
   const total=cum.at(-1);
@@ -340,8 +346,8 @@ function detectClimbsSmooth(S,Z,opt){
   const gRaw=gradientSeries(S,Z);
   let g=gRaw;
   if(opt.useSmoothing){
-    const wMed=Math.max(1,Math.round(opt.winMed/opt.stepM)|0|1);
-    const wAvg=Math.max(1,Math.round(opt.winAvg/opt.stepM)|0|1);
+    const wMed = toOddWindow((opt.winMed || 0) / (opt.stepM || 1));
+    const wAvg = toOddWindow((opt.winAvg || 0) / (opt.stepM || 1));
     g=movingAverage(movingMedian(gRaw,wMed),wAvg);
   }
   const climbs=[];
@@ -440,7 +446,7 @@ async function nearPoiForwardSnap(cand, categoryIds, coords, cum){
         if(score>bestScore){bestScore=score;best={lat:plat,lon:plon,name:f.properties.name||'休憩'};}
       }
       if(best) return best;
-    }catch{}
+    }catch(e){}
   }
   return {lat:cand.lat,lon:cand.lon,name:'休憩'};
 }
