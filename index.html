@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>自転車ルート比較＋自動休憩 PNG 出力 v5.5.0</title>
+<title>自転車ルート比較＋自動休憩（連続上り対応） v5.6.0</title>
 
 <!-- ライブラリ -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
@@ -31,8 +31,6 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 details{border:1px solid #ddd;border-radius:6px;padding:6px;background:#fff}
 #charts{display:none}
 #charts canvas{width:800px;height:400px}
-hr{border:none;border-top:1px solid #e6e6e6;margin:8px 0}
-label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:8px}
 .small{font-size:.9em;color:#555}
 </style>
 </head>
@@ -86,7 +84,7 @@ label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:8px}
   </div>
 
   <details open><summary>休憩場所の条件</summary>
-    <div class="small">※ ORSのPOIカテゴリIDの既定は下記に設定済み。必要なら変更してください。</div>
+    <div class="small">対象カテゴリはチェックで選択（既定：4種）。必要なら下の入力で上書き可能。</div>
     <div class="group" id="poiCats">
       <label class="chk"><input type="checkbox" data-cat="451" id="cat-conv" checked> コンビニ</label>
       <label class="chk"><input type="checkbox" data-cat="443" id="cat-sup"  checked> スーパー</label>
@@ -96,15 +94,15 @@ label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:8px}
     <div class="small">上級者向け: カンマ区切りで上書き → <input id="customCats" placeholder="例: 451,443,624,518" style="width:200px"></div>
   </details>
 
-  <details><summary>急坂での休憩を追加</summary>
+  <details open><summary>急坂での休憩を追加（連続上り検出）</summary>
     <div class="group">
-      <label class="chk"><input type="checkbox" id="restBeforeHill"> 坂の前に休憩</label>
-      <label class="chk"><input type="checkbox" id="restAfterHill" > 坂の後に休憩</label>
-      <label>勾配しきい値 <input id="slopeThreshold" type="number" value="6" min="3" max="15" step="0.5" style="width:70px"> %</label>
+      <label class="chk"><input type="checkbox" id="restBeforeHill"> 上り区間の前に休憩</label>
+      <label class="chk"><input type="checkbox" id="restAfterHill" > 上り区間の後に休憩</label>
+      <label>しきい値（平均勾配） <input id="slopeThreshold" type="number" value="6" min="3" max="15" step="0.5" style="width:70px"> %</label>
       <label>前に置く距離 <input id="beforeOffset" type="number" value="150" min="0" max="1000" step="10" style="width:70px"> m</label>
       <label>後に置く距離 <input id="afterOffset"  type="number" value="100" min="0" max="1000" step="10" style="width:70px"> m</label>
     </div>
-    <div class="small">※ 勾配はステップの標高差と距離から算出。上りのみ判定。</div>
+    <div class="small">※ 連続する上り step を束ね、入口/出口に休憩候補を置きます（平均勾配がしきい値以上、長さや獲得標高の最低条件あり）。</div>
   </details>
 
   <details><summary>詳細設定（簡易エネルギーモデル）</summary>
@@ -132,12 +130,11 @@ label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:8px}
 const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9';  // ←★ここに自分のキー
 const ORS_ROOT = 'https://api.openrouteservice.org';
 const PROXY    = 'https://api.allorigins.win/raw?url='; // /pois 用CORSプロキシ
-// 既定カテゴリ（コンビニ,スーパー,道の駅,ドラッグ）
-const DEFAULT_POI_CATS = [451,443,624,518];
+const DEFAULT_POI_CATS = [451,443,624,518]; // コンビニ,スーパー,道の駅,ドラッグ
 
 const RADII    = [1000,2000,3500];
 const CLOSE_TO_GOAL_M = 500;
-const MIN_GAP_BETWEEN_RESTS_M = 150; // 休憩点の重複防止距離
+const MIN_GAP_BETWEEN_RESTS_M = 150; // 休憩点の重複防止（直線距離ベース）
 
 /* ===== ヘルパ ===== */
 const $ = id=>document.getElementById(id);
@@ -247,11 +244,75 @@ const distLL=(aLat,aLon,bLat,bLon)=>L.latLng(aLat,aLon).distanceTo([bLat,bLon]);
 /* ===== エネルギー ===== */
 const energyStepKJ=(d,dz,m,flat)=>flat*(d/1000)+Math.max(dz,0)*m*9.80665/1000;
 
-/* ===== 休憩ロジック（時間/kJ＋急坂前後） ===== */
+/* ===== 連続上り検出関連ユーティリティ ===== */
+// ルート各座標の累積距離 [m]
+function buildCumDistArray(coords){
+  const cd=[0];
+  for(let i=1;i<coords.length;i++){
+    const [lon,lat]=coords[i];
+    cd[i]=cd[i-1]+L.latLng(lat,lon).distanceTo([coords[i-1][1],coords[i-1][0]]);
+  }
+  return cd;
+}
+// 任意の routeD 上の緯度経度（線形補間）
+function findPointAtRouteD(coords, cum, targetD){
+  if(targetD<=0){ const [lon,lat]=coords[0]; return {lat,lon}; }
+  const total=cum.at(-1);
+  if(targetD>=total){ const [lon,lat]=coords.at(-1); return {lat,lon}; }
+  let i=1; while(i<coords.length && cum[i]<targetD) i++;
+  const i0=i-1, i1=i, d=cum[i1]-cum[i0]||1, r=(targetD-cum[i0])/d;
+  const [lon0,lat0]=coords[i0], [lon1,lat1]=coords[i1];
+  return {lat: lat0+(lat1-lat0)*r, lon: lon0+(lon1-lon0)*r};
+}
+// 連続上り区間を step を束ねて検出
+function detectClimbs(coords, segs, cum, opt={grade_start:6, grade_keep:4, min_len:200, min_gain:15}){
+  const climbs=[];
+  let inClimb=false, startIdx=null, gain=0, len=0;
+
+  const pushIfValid=(endIdx)=>{
+    if(len>=opt.min_len || gain>=opt.min_gain){
+      const avg = len>0 ? (gain/len)*100 : 0;
+      climbs.push({start:startIdx, end:endIdx, len, gain, avg});
+    }
+  };
+
+  for(const seg of segs){
+    for(const st of seg.steps){
+      const [i0,i1]=st.way_points;
+      const d = (cum[i1]-cum[i0])||0;
+      const z0=(coords[i0][2]||0), z1=(coords[i1][2]||0);
+      const dz = z1 - z0;
+      const grade = d>0 ? (dz/d)*100 : 0;
+
+      if(!inClimb){
+        if(dz>0 && grade>=opt.grade_start){
+          inClimb=true; startIdx=i0; gain=dz; len=d;
+        }
+      }else{
+        if(dz>0 && grade>=opt.grade_keep){
+          gain+=dz; len+=d;
+        }else{
+          // 終了
+          pushIfValid(i0);
+          inClimb=false; startIdx=null; gain=0; len=0;
+        }
+      }
+    }
+  }
+  if(inClimb) pushIfValid(coords.length-1);
+  return climbs;
+}
+
+/* ===== 休憩ロジック（連続上り対応＋時間/kJ） ===== */
 async function makeRest(feat,basis,mass,flat,thr, hillOpts, categoryIds){
-  const crd=feat.geometry.coordinates,segs=feat.properties.segments,hasEle=crd[0].length>=3;
+  const crd=feat.geometry.coordinates, segs=feat.properties.segments;
+  const hasEle=crd[0].length>=3;
+  const cum=buildCumDistArray(crd);
+
   const res=[];
   let acc=0;
+
+  // 近接・ゴール近傍のフィルタ込みで追加
   const pushUnique = async (lat,lon)=>{
     if(isClose(lat,lon)) return;
     if(res.some(r=>distLL(r.lat,r.lon,lat,lon)<MIN_GAP_BETWEEN_RESTS_M)) return;
@@ -262,27 +323,11 @@ async function makeRest(feat,basis,mass,flat,thr, hillOpts, categoryIds){
     res.push({name:poi.properties.name||'休憩',lat:pLat,lon:pLon,type:'via',isRest:true});
   };
 
+  // 1) 時間 / kJ しきい値による候補
   for(const seg of segs){
     for(const st of seg.steps){
       const [i0,i1]=st.way_points, d=st.distance||0, t=st.duration||0;
       const z0=hasEle?(crd[i0][2]||0):0, z1=hasEle?(crd[i1][2]||0):0, dz=z1-z0;
-      const grade = d>0 ? (dz/d)*100 : 0; // %
-
-      // --- 坂前/後トリガ ---
-      if(hillOpts){
-        if(hillOpts.before && grade>=hillOpts.th && dz>0){
-          // 前側オフセット（m）
-          const p = pointAlongStep(crd,i0,i1,Math.max(0, d - hillOpts.beforeOff));
-          await pushUnique(p.lat,p.lon);
-        }
-        if(hillOpts.after && grade>=hillOpts.th && dz>0){
-          // 後側オフセット（m）
-          const p = pointAlongStep(crd,i0,i1,Math.min(d, hillOpts.afterOff));
-          await pushUnique(p.lat,p.lon);
-        }
-      }
-
-      // --- 時間/エネルギー積算トリガ ---
       acc += (basis==='time') ? t : energyStepKJ(d,dz,mass,flat);
       if(acc>=thr){
         const [lon,lat]=crd[i1];
@@ -291,17 +336,31 @@ async function makeRest(feat,basis,mass,flat,thr, hillOpts, categoryIds){
       }
     }
   }
-  return res;
-}
 
-/* 指定ステップ内で距離offset(m)地点の緯度経度を近似取得 */
-function pointAlongStep(coords, i0, i1, offsetM){
-  // 2点直線近似（ステップは短い前提）
-  const [lon0,lat0,z0]=coords[i0], [lon1,lat1,z1]=coords[i1];
-  const d=L.latLng(lat0,lon0).distanceTo([lat1,lon1])||1;
-  const r=Math.min(Math.max(offsetM/d,0),1);
-  const lat=lat0+(lat1-lat0)*r, lon=lon0+(lon1-lon0)*r;
-  return {lat,lon};
+  // 2) 連続上りの入口/出口に候補
+  if(hillOpts?.before || hillOpts?.after){
+    const th = Number(hillOpts.th)||6;
+    const climbs = detectClimbs(crd, segs, cum, {
+      grade_start: th,
+      grade_keep : Math.max(th-2, 2),
+      min_len: 200,
+      min_gain: 15
+    });
+    for(const c of climbs){
+      if(hillOpts.before){
+        const targetD = Math.max(0, cum[c.start] - (Number(hillOpts.beforeOff)||150));
+        const P = findPointAtRouteD(crd, cum, targetD);
+        await pushUnique(P.lat, P.lon);
+      }
+      if(hillOpts.after){
+        const targetD = Math.min(cum.at(-1), cum[c.end] + (Number(hillOpts.afterOff)||100));
+        const P = findPointAtRouteD(crd, cum, targetD);
+        await pushUnique(P.lat, P.lon);
+      }
+    }
+  }
+
+  return res;
 }
 
 /* ===== グラフ共通（オフスクリーン描画） ===== */
@@ -406,7 +465,7 @@ function downloadLineChart({labels, values, xlabel, ylabel, filename}){
   },120);
 }
 
-/* ===== ルート描画（休憩の条件拡張版） ===== */
+/* ===== ルート描画（連続上り対応版） ===== */
 async function drawRoutes(){
   $('btnDownloadTime').disabled=true;
   $('btnDownloadDist').disabled=true;
@@ -414,11 +473,11 @@ async function drawRoutes(){
 
   if(pts.length<2){alert('2地点以上登録してください');return;}
 
-  // --- 既存レイヤをクリア
+  // レイヤクリア
   Object.values(routeLayers).forEach(l=>l&&map.removeLayer(l)); routeLayers={};
   if(markerLayer) map.removeLayer(markerLayer);
 
-  // --- 前回の休憩点を除去（重複防止）
+  // 以前の休憩を除去
   pts = pts.filter(p => !p.isRest);
   fixType();
   drawList();
@@ -429,7 +488,7 @@ async function drawRoutes(){
   const basis=$('restBasis').value;
   const thr  =basis==='time'?Number($('restMinutes').value)*60:Number($('restKJ').value);
 
-  // 急坂オプション
+  // 連続上りのオプション
   const hillOpts = {
     before: $('restBeforeHill').checked,
     after : $('restAfterHill').checked,
@@ -439,7 +498,7 @@ async function drawRoutes(){
   };
   const categoryIds = getSelectedCatIds();
 
-  // --- 休憩プレビュー（ここで via を挿入）
+  // 休憩プレビュー→挿入
   try{
     if($('restToggle').checked){
       const preview=await dir({
@@ -449,7 +508,7 @@ async function drawRoutes(){
 
       const rests=await makeRest(preview.features[0],basis,mass,flat,thr, hillOpts, categoryIds);
       if(rests.length){
-        const insertPos=Math.max(pts.length-1,1); // 目的地直前にまとめて
+        const insertPos=Math.max(pts.length-1,1);
         pts.splice(insertPos,0,...rests);
         fixType();
         drawList();
@@ -457,7 +516,7 @@ async function drawRoutes(){
     }
   }catch(e){console.warn('休憩地点取得失敗',e);}
 
-  // --- マーカー描画（休憩挿入後）
+  // マーカー描画（休憩挿入後）
   markerLayer=L.layerGroup().addTo(map);
   pts.forEach(p=>{
     const ic=p.type==='start'?ICONS.start:p.type==='goal'?ICONS.goal:ICONS.via;
@@ -465,7 +524,7 @@ async function drawRoutes(){
     markerLayer.addLayer(mk);
   });
 
-  // --- ルート本体
+  // ルート本体
   const coords=pts.map(p=>[p.lon,p.lat]), base={coordinates:coords,elevation:true,extra_info:['steepness']};
   try{
     const shortest = await dir({...base,preference:'shortest'},profile);
