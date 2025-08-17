@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>自転車ルート比較＋自動休憩（連続上り対応） v5.6.0</title>
+<title>自転車ルート比較＋休憩（入口/出口＆各機能ON/OFF） v5.7.0</title>
 
 <!-- ライブラリ -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
@@ -12,7 +12,6 @@
 <script  src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
-/* 画面レイアウト */
 body{margin:0;font-family:system-ui,sans-serif}
 #map{height:500px;width:100%}
 #controls{display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:#f7f7f7}
@@ -24,19 +23,19 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 #searchResults li:hover{background:#e0e0e0}
 #summary{padding:8px;background:#fafafa;border-top:1px solid #ddd;font-size:0.9rem}
 .section{padding:8px;background:#fff;border-top:1px solid #eee}
-.group{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.muted{color:#666;font-size:0.85em}
-.presetKJ{border:1px solid #ccc;border-radius:14px;padding:2px 8px;font-size:.85em;background:#fff;cursor:pointer}
-.presetKJ:hover{background:#f0f0f0}
+.group{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}
+.small{font-size:.88em;color:#555}
 details{border:1px solid #ddd;border-radius:6px;padding:6px;background:#fff}
 #charts{display:none}
 #charts canvas{width:800px;height:400px}
-.small{font-size:.9em;color:#555}
+hr{border:none;border-top:1px solid #eee;margin:8px 0}
+label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:10px}
+input[type=number]{width:90px}
 </style>
 </head>
 <body>
 
-<!-- ────────── 入力 UI ────────── -->
+<!-- ────────── 上部操作 ────────── -->
 <div id="controls">
   <input id="placeInput" placeholder="地名・住所" style="width:260px">
   <button id="searchBtn">検索</button>
@@ -57,10 +56,10 @@ details{border:1px solid #ddd;border-radius:6px;padding:6px;background:#fff}
   </label>
 
   <span id="timeBox" class="group" style="display:none">
-    <label>間隔 <input id="restMinutes" type="number" value="60" min="15" step="5" style="width:70px"> 分</label>
+    <label>間隔 <input id="restMinutes" type="number" value="60" min="15" step="5"> 分</label>
   </span>
   <span id="energyBox" class="group">
-    <label>しきい値 <input id="restKJ" type="number" value="500" min="100" step="50" style="width:90px"> kJ</label>
+    <label>しきい値 <input id="restKJ" type="number" value="500" min="100" step="50"> kJ</label>
     <button type="button" class="presetKJ" data-kj="400">400</button>
     <button type="button" class="presetKJ" data-kj="500">500</button>
     <button type="button" class="presetKJ" data-kj="650">650</button>
@@ -77,37 +76,75 @@ details{border:1px solid #ddd;border-radius:6px;padding:6px;background:#fff}
   <label><input type="checkbox" id="chkSlope" checked> 勾配</label>
 </div>
 
+<!-- ────────── 休憩ロジック設定 ────────── -->
 <div class="section">
   <div class="group">
-    <label>体重 <input id="riderWeight" type="number" value="65" min="30" max="150" step="0.5" style="width:80px"> kg</label>
-    <label>バイク重量 <input id="bikeWeight" type="number" value="10" min="5" max="30" step="0.1" style="width:80px"> kg</label>
+    <label>体重 <input id="riderWeight" type="number" value="65" min="30" max="150" step="0.5"> kg</label>
+    <label>バイク重量 <input id="bikeWeight" type="number" value="10" min="5" max="30" step="0.1"> kg</label>
   </div>
 
-  <details open><summary>休憩場所の条件</summary>
-    <div class="small">対象カテゴリはチェックで選択（既定：4種）。必要なら下の入力で上書き可能。</div>
+  <details open><summary>休憩場所のカテゴリ（POI）</summary>
+    <div class="small">※ ORSのカテゴリID：コンビニ=451, スーパー=443, 道の駅=624, ドラッグ=518</div>
     <div class="group" id="poiCats">
-      <label class="chk"><input type="checkbox" data-cat="451" id="cat-conv" checked> コンビニ</label>
-      <label class="chk"><input type="checkbox" data-cat="443" id="cat-sup"  checked> スーパー</label>
-      <label class="chk"><input type="checkbox" data-cat="624" id="cat-michi" checked> 道の駅</label>
-      <label class="chk"><input type="checkbox" data-cat="518" id="cat-drug" checked> ドラッグストア</label>
+      <label class="chk"><input type="checkbox" data-cat="451" checked> コンビニ</label>
+      <label class="chk"><input type="checkbox" data-cat="443" checked> スーパー</label>
+      <label class="chk"><input type="checkbox" data-cat="624" checked> 道の駅</label>
+      <label class="chk"><input type="checkbox" data-cat="518" checked> ドラッグストア</label>
     </div>
-    <div class="small">上級者向け: カンマ区切りで上書き → <input id="customCats" placeholder="例: 451,443,624,518" style="width:200px"></div>
+    <div class="small">上級者向け: カンマ区切りで上書き → <input id="customCats" placeholder="451,443,624,518" style="width:200px"></div>
   </details>
 
-  <details open><summary>急坂での休憩を追加（連続上り検出）</summary>
+  <details open><summary>「山の入口/出口」方式（等間隔リサンプリング＋平滑化）</summary>
     <div class="group">
-      <label class="chk"><input type="checkbox" id="restBeforeHill"> 上り区間の前に休憩</label>
-      <label class="chk"><input type="checkbox" id="restAfterHill" > 上り区間の後に休憩</label>
-      <label>しきい値（平均勾配） <input id="slopeThreshold" type="number" value="6" min="3" max="15" step="0.5" style="width:70px"> %</label>
-      <label>前に置く距離 <input id="beforeOffset" type="number" value="150" min="0" max="1000" step="10" style="width:70px"> m</label>
-      <label>後に置く距離 <input id="afterOffset"  type="number" value="100" min="0" max="1000" step="10" style="width:70px"> m</label>
+      <label class="chk"><input type="checkbox" id="optHillEntry" checked> 入口に設置</label>
+      <label class="chk"><input type="checkbox" id="optHillExit"  checked> 出口に設置</label>
+      <label class="chk"><input type="checkbox" id="optSmoothing" checked> 平滑化＋ヒステリシスを使う</label>
+      <label class="chk"><input type="checkbox" id="optBridge"    checked> 短い谷は連結（橋渡し）</label>
     </div>
-    <div class="small">※ 連続する上り step を束ね、入口/出口に休憩候補を置きます（平均勾配がしきい値以上、長さや獲得標高の最低条件あり）。</div>
+    <div class="group">
+      <label>平均勾配しきい値 <input id="slopeThreshold" type="number" value="6" min="3" max="15" step="0.5"> %</label>
+      <label>継続しきい値（自動）= しきい値 - 2%</label>
+      <label>最低長 <input id="minLen" type="number" value="400" min="0" step="50"> m</label>
+      <label>最低獲得標高 <input id="minGain" type="number" value="40" min="0" step="5"> m</label>
+    </div>
+    <div class="group">
+      <label>入口オフセット <input id="beforeOffset" type="number" value="200" min="0" max="1000" step="10"> m</label>
+      <label>出口オフセット <input id="afterOffset"  type="number" value="150" min="0" max="1000" step="10"> m</label>
+      <label>平滑化窓（中央値/平均） <input id="winMed" type="number" value="150" min="0" step="25"> / <input id="winAvg" type="number" value="150" min="0" step="25"> m</label>
+      <label>リサンプル間隔 <input id="resampleStep" type="number" value="25" min="5" step="5"> m</label>
+      <label>橋渡し許容量 <input id="bridgeGap" type="number" value="100" min="0" step="10"> m</label>
+    </div>
+  </details>
+
+  <details open><summary>積算トリガ（時間/kJ）</summary>
+    <div class="group">
+      <label class="chk"><input type="checkbox" id="optAccum" checked> 積算トリガを使う</label>
+      <span class="small">※ 上の「基準」と「しきい値/間隔」設定を使用</span>
+    </div>
+  </details>
+
+  <details open><summary>間引き・スナップ・安全装置</summary>
+    <div class="group">
+      <label class="chk"><input type="checkbox" id="optMinGap" checked> 最小ルート間隔を適用</label>
+      <label>最小間隔 <input id="minGapRoute" type="number" value="1200" min="100" step="50"> m</label>
+      <label class="chk"><input type="checkbox" id="optGreedy" checked> スコア順に貪欲選抜</label>
+    </div>
+    <div class="group">
+      <label class="chk"><input type="checkbox" id="optForwardSnap" checked> 前方バイアスPOIスナップ</label>
+      <span class="small">（OFFなら最寄り1件にスナップ）</span>
+    </div>
+    <div class="group">
+      <label class="chk"><input type="checkbox" id="optExclusion" checked> スタート/ゴール禁止帯</label>
+      <label>スタート禁止帯 <input id="startEx" type="number" value="1000" min="0" step="100"> m</label>
+      <label>ゴール禁止帯 <input id="goalEx" type="number" value="1000" min="0" step="100"> m</label>
+      <label class="chk"><input type="checkbox" id="optMaxCount" checked> 休憩点の上限</label>
+      <label>最大数 <input id="maxCount" type="number" value="8" min="1" step="1"></label>
+    </div>
   </details>
 
   <details><summary>詳細設定（簡易エネルギーモデル）</summary>
-    <div class="muted">平坦係数 (kJ/km)</div>
-    <label>平坦係数 <input id="flatKJperKm" type="number" value="18" min="10" max="30" step="0.5" style="width:90px"> kJ/km</label>
+    <div class="small">平坦係数 (kJ/km)</div>
+    <label>平坦係数 <input id="flatKJperKm" type="number" value="18" min="10" max="30" step="0.5"> kJ/km</label>
   </details>
 </div>
 
@@ -120,21 +157,21 @@ details{border:1px solid #ddd;border-radius:6px;padding:6px;background:#fff}
   <div id="distanceScore" class="muted"></div>
 </div>
 
-<!-- 画像化用オフスクリーン -->
+<!-- グラフ用オフスクリーン -->
 <div id="charts">
   <canvas id="energyChart"></canvas>
 </div>
 
 <script>
 /* ===== 定数 ===== */
-const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9';  // ←★ここに自分のキー
+const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9';  // ←★自分のキー
 const ORS_ROOT = 'https://api.openrouteservice.org';
-const PROXY    = 'https://api.allorigins.win/raw?url='; // /pois 用CORSプロキシ
-const DEFAULT_POI_CATS = [451,443,624,518]; // コンビニ,スーパー,道の駅,ドラッグ
+const PROXY    = 'https://api.allorigins.win/raw?url=';
+const DEFAULT_POI_CATS = [451,443,624,518];
 
 const RADII    = [1000,2000,3500];
 const CLOSE_TO_GOAL_M = 500;
-const MIN_GAP_BETWEEN_RESTS_M = 150; // 休憩点の重複防止（直線距離ベース）
+const MIN_GAP_BETWEEN_RESTS_M = 150; // 直線距離の近接スキップ
 
 /* ===== ヘルパ ===== */
 const $ = id=>document.getElementById(id);
@@ -164,13 +201,23 @@ window.addEventListener('DOMContentLoaded',()=>{
   $('btnDownloadTime').onclick = ()=>downloadEnergyGraphByTime(lastFastest,lastMass,lastFlat);
   $('btnDownloadDist').onclick = ()=>downloadEnergyGraphByDistance(lastFastest,lastMass,lastFlat);
 
-  $('restModeBtn').onclick = ()=>{ $('restToggle').checked=!$('restToggle').checked; $('restModeBtn').textContent='休憩込み: '+($('restToggle').checked?'ON':'OFF'); drawRoutes(); };
-  $('restBasis').onchange  = e=>{ const v=e.target.value; $('timeBox').style.display=v==='time'?'inline-flex':'none'; $('energyBox').style.display=v==='energy'?'inline-flex':'none'; };
-  document.addEventListener('click',e=>{const b=e.target.closest('.presetKJ');if(b) $('restKJ').value=b.dataset.kj;});
+  $('restModeBtn').onclick = ()=>{
+    $('restToggle').checked=!$('restToggle').checked;
+    $('restModeBtn').textContent='休憩込み: '+($('restToggle').checked?'ON':'OFF');
+    drawRoutes();
+  };
+  $('restBasis').onchange  = e=>{
+    const v=e.target.value;
+    $('timeBox').style.display=v==='time'?'inline-flex':'none';
+    $('energyBox').style.display=v==='energy'?'inline-flex':'none';
+  };
+  document.addEventListener('click',e=>{
+    const b=e.target.closest('.presetKJ'); if(b) $('restKJ').value=b.dataset.kj;
+  });
   initSortable();
 });
 
-/* ===== Nominatim 検索 ===== */
+/* ===== 検索 ===== */
 async function nomSearch(q){
   let url=`https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(q)}`;
   if($('nearbyOnly').checked){
@@ -186,7 +233,7 @@ async function nomSearch(q){
   });
 }
 
-/* ===== リスト操作 ===== */
+/* ===== リスト ===== */
 function addPoint(p){p.type=pts.length?'':'start';pts.forEach(d=>d.type==='goal'&&(d.type='via'));pts.push(p);if(pts.length>1)pts.at(-1).type='goal';drawList();}
 function drawList(){
   const ul=$('pointList');ul.innerHTML='';
@@ -204,11 +251,11 @@ function initSortable(){new Sortable($('pointList'),{animation:150,handle:'span'
 /* ===== 現在地 ===== */
 function addCurrent(){navigator.geolocation.getCurrentPosition(p=>addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude}),()=>alert('現在地取得失敗'));}
 
-/* ===== Directions API ===== */
+/* ===== ORS ===== */
 async function post(url,body){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':ORS_KEY},body:JSON.stringify(body)});if(!r.ok) throw new Error(r.status);return r.json();}
 async function dir(body,profile){const wait=1100-(Date.now()-lastDirTs);if(wait>0) await sleep(wait);const d=await post(`${ORS_ROOT}/v2/directions/${profile}/geojson`,body);lastDirTs=Date.now();return d;}
 
-/* ===== POI カテゴリ取得（UI） ===== */
+/* ===== POIカテゴリ ===== */
 function getSelectedCatIds(){
   const custom = $('customCats').value.trim();
   if(custom){
@@ -220,8 +267,8 @@ function getSelectedCatIds(){
   return sel.length ? sel : DEFAULT_POI_CATS.slice();
 }
 
-/* ===== POI 取得 (プロキシ経由) ===== */
-async function nearPoi(lat,lon, categoryIds){
+/* ===== POI検索（シンプル） ===== */
+async function nearPoi(lat,lon,categoryIds){
   for(const buf of RADII){
     const qs=new URLSearchParams({
       api_key:ORS_KEY,request:'pois',limit:20,sortby:'distance',
@@ -229,8 +276,7 @@ async function nearPoi(lat,lon, categoryIds){
       filters :JSON.stringify({category_ids:categoryIds})
     });
     try{
-      const url = `${ORS_ROOT}/pois?${qs.toString()}`;
-      const r   = await fetch(PROXY+encodeURIComponent(url));
+      const r=await fetch(PROXY+encodeURIComponent(`${ORS_ROOT}/pois?${qs}`));
       if(!r.ok) throw new Error();
       const d=await r.json();
       if(d.features?.length) return d.features[0];
@@ -238,23 +284,22 @@ async function nearPoi(lat,lon, categoryIds){
   }
   return {geometry:{coordinates:[lon,lat]},properties:{name:'休憩'}};
 }
+
 const isClose=(lat,lon)=>{const g=pts.at(-1);return g?L.latLng(lat,lon).distanceTo([g.lat,g.lon])<=CLOSE_TO_GOAL_M:false;};
 const distLL=(aLat,aLon,bLat,bLon)=>L.latLng(aLat,aLon).distanceTo([bLat,bLon]);
 
 /* ===== エネルギー ===== */
 const energyStepKJ=(d,dz,m,flat)=>flat*(d/1000)+Math.max(dz,0)*m*9.80665/1000;
 
-/* ===== 連続上り検出関連ユーティリティ ===== */
-// ルート各座標の累積距離 [m]
+/* ===== 距離累積と補間 ===== */
 function buildCumDistArray(coords){
   const cd=[0];
   for(let i=1;i<coords.length;i++){
-    const [lon,lat]=coords[i];
-    cd[i]=cd[i-1]+L.latLng(lat,lon).distanceTo([coords[i-1][1],coords[i-1][0]]);
+    const [lon,lat]=coords[i], [plon,plat]=coords[i-1];
+    cd[i]=cd[i-1]+L.latLng(lat,lon).distanceTo([plat,plon]);
   }
   return cd;
 }
-// 任意の routeD 上の緯度経度（線形補間）
 function findPointAtRouteD(coords, cum, targetD){
   if(targetD<=0){ const [lon,lat]=coords[0]; return {lat,lon}; }
   const total=cum.at(-1);
@@ -264,208 +309,291 @@ function findPointAtRouteD(coords, cum, targetD){
   const [lon0,lat0]=coords[i0], [lon1,lat1]=coords[i1];
   return {lat: lat0+(lat1-lat0)*r, lon: lon0+(lon1-lon0)*r};
 }
-// 連続上り区間を step を束ねて検出
-function detectClimbs(coords, segs, cum, opt={grade_start:6, grade_keep:4, min_len:200, min_gain:15}){
+
+/* ===== 等間隔リサンプリング＆平滑化 ===== */
+function resampleByDistance(coords, stepM=25){
+  const cum=buildCumDistArray(coords);
+  const total=cum.at(-1);
+  const S=[], Z=[];
+  for(let s=0;s<=total;s+=stepM){
+    let i=1; while(i<cum.length && cum[i]<s) i++;
+    const i0=i-1, i1=i, d=cum[i1]-cum[i0]||1, r=(s-cum[i0])/d;
+    const [lon0,lat0,z0=0]=coords[i0], [lon1,lat1,z1=0]=coords[i1];
+    Z.push(z0+(z1-z0)*r); S.push(s);
+  }
+  if(S.at(-1)!==total){ S.push(total); Z.push(coords.at(-1)[2]||Z.at(-1)); }
+  return {S,Z,total,cum};
+}
+function gradientSeries(S,Z){
+  const g=Array(S.length).fill(0);
+  for(let i=1;i<S.length;i++){
+    const dz=Z[i]-Z[i-1], ds=S[i]-S[i-1]||1;
+    g[i]=dz>0?(dz/ds)*100:0;
+  }
+  return g;
+}
+function movingMedian(a, win){const r=[],k=Math.max(0,Math.floor(win/2));for(let i=0;i<a.length;i++){const s=Math.max(0,i-k),e=Math.min(a.length-1,i+k);const w=a.slice(s,e+1).slice().sort((x,y)=>x-y);r.push(w[Math.floor(w.length/2)]);}return r;}
+function movingAverage(a, win){const r=[],k=Math.max(0,Math.floor(win/2));for(let i=0;i<a.length;i++){let s=0,c=0;for(let j=Math.max(0,i-k);j<=Math.min(a.length-1,i+k);j++){s+=a[j];c++;}r.push(s/c);}return r;}
+
+/* ===== 山の抽出（スムーズ/ヒステリシス/橋渡し） ===== */
+function detectClimbsSmooth(S,Z,opt){
+  const gRaw=gradientSeries(S,Z);
+  let g=gRaw;
+  if(opt.useSmoothing){
+    const wMed=Math.max(1,Math.round(opt.winMed/opt.stepM)|0|1);
+    const wAvg=Math.max(1,Math.round(opt.winAvg/opt.stepM)|0|1);
+    g=movingAverage(movingMedian(gRaw,wMed),wAvg);
+  }
   const climbs=[];
-  let inClimb=false, startIdx=null, gain=0, len=0;
+  let inClimb=false,startIdx=0,gain=0,len=0,maxg=0,lastHi=0;
+  const grade_start=opt.grade_start, grade_keep=opt.grade_keep;
+  const bridge_gap=opt.useBridge?opt.bridgeGap:0;
 
   const pushIfValid=(endIdx)=>{
     if(len>=opt.min_len || gain>=opt.min_gain){
-      const avg = len>0 ? (gain/len)*100 : 0;
-      climbs.push({start:startIdx, end:endIdx, len, gain, avg});
+      climbs.push({s:S[startIdx],e:S[endIdx],len,gain,avg:(gain/Math.max(1,len))*100,gmax:maxg});
     }
   };
 
-  for(const seg of segs){
-    for(const st of seg.steps){
-      const [i0,i1]=st.way_points;
-      const d = (cum[i1]-cum[i0])||0;
-      const z0=(coords[i0][2]||0), z1=(coords[i1][2]||0);
-      const dz = z1 - z0;
-      const grade = d>0 ? (dz/d)*100 : 0;
-
-      if(!inClimb){
-        if(dz>0 && grade>=opt.grade_start){
-          inClimb=true; startIdx=i0; gain=dz; len=d;
-        }
-      }else{
-        if(dz>0 && grade>=opt.grade_keep){
-          gain+=dz; len+=d;
-        }else{
-          // 終了
-          pushIfValid(i0);
-          inClimb=false; startIdx=null; gain=0; len=0;
-        }
+  for(let i=1;i<g.length;i++){
+    const ds=S[i]-S[i-1], dz=Math.max(Z[i]-Z[i-1],0), gi=g[i];
+    if(!inClimb){
+      if(gi>=grade_start){inClimb=true;startIdx=i-1;gain=dz;len=ds;maxg=gi;lastHi=i;}
+    }else{
+      if(gi>=grade_keep){gain+=dz;len+=ds;if(gi>maxg)maxg=gi;lastHi=i;}
+      else{
+        const gap=S[i]-S[lastHi];
+        if(gap>bridge_gap){pushIfValid(i-1);inClimb=false;gain=0;len=0;maxg=0;}
+        else{len+=ds;gain+=dz;}
       }
     }
   }
-  if(inClimb) pushIfValid(coords.length-1);
-  return climbs;
+  if(inClimb) pushIfValid(g.length-1);
+  return {climbs,gSmooth:g};
+}
+function adjustToFlatterRouteD(S,gSmooth,routeD,winM=120){
+  let idx=S.findIndex(s=>s>=routeD); if(idx<0) idx=S.length-1;
+  const w=Math.max(1,Math.round(winM/ (S[1]-S[0] || 1)));
+  let bestIdx=idx,best=Infinity;
+  for(let j=Math.max(0,idx-w);j<=Math.min(S.length-1,idx+w);j++){
+    if(gSmooth[j]<best){best=gSmooth[j];bestIdx=j;}
+  }
+  return S[bestIdx];
 }
 
-/* ===== 休憩ロジック（連続上り対応＋時間/kJ） ===== */
-async function makeRest(feat,basis,mass,flat,thr, hillOpts, categoryIds){
-  const crd=feat.geometry.coordinates, segs=feat.properties.segments;
-  const hasEle=crd[0].length>=3;
-  const cum=buildCumDistArray(crd);
-
-  const res=[];
-  let acc=0;
-
-  // 近接・ゴール近傍のフィルタ込みで追加
-  const pushUnique = async (lat,lon)=>{
-    if(isClose(lat,lon)) return;
-    if(res.some(r=>distLL(r.lat,r.lon,lat,lon)<MIN_GAP_BETWEEN_RESTS_M)) return;
-    const poi=await nearPoi(lat,lon,categoryIds);
-    const pLat=poi.geometry.coordinates[1], pLon=poi.geometry.coordinates[0];
-    if(isClose(pLat,pLon)) return;
-    if(res.some(r=>distLL(r.lat,r.lon,pLat,pLon)<MIN_GAP_BETWEEN_RESTS_M)) return;
-    res.push({name:poi.properties.name||'休憩',lat:pLat,lon:pLon,type:'via',isRest:true});
-  };
-
-  // 1) 時間 / kJ しきい値による候補
-  for(const seg of segs){
-    for(const st of seg.steps){
-      const [i0,i1]=st.way_points, d=st.distance||0, t=st.duration||0;
-      const z0=hasEle?(crd[i0][2]||0):0, z1=hasEle?(crd[i1][2]||0):0, dz=z1-z0;
-      acc += (basis==='time') ? t : energyStepKJ(d,dz,mass,flat);
-      if(acc>=thr){
-        const [lon,lat]=crd[i1];
-        await pushUnique(lat,lon);
-        acc=0;
-      }
-    }
+/* ===== 候補スコア＆選抜 ===== */
+function scoreCandidate(c){
+  const base = c.kind==='ENTRY'?3:(c.kind==='EXIT'?2:1);
+  const bonus=(c.avg||0)*0.1 + (c.gain||0)*0.002 + (c.gmax||0)*0.05;
+  return base+bonus;
+}
+function selectByMinGap(cands, minGapRoute=1200, useGreedy=true){
+  if(!useGreedy) return cands.slice().sort((a,b)=>a.routeD-b.routeD);
+  cands.forEach(c=>c.score=scoreCandidate(c));
+  cands.sort((a,b)=>b.score-a.score);
+  const kept=[];
+  for(const c of cands){
+    if(kept.every(k=>Math.abs(k.routeD-c.routeD)>=minGapRoute)) kept.push(c);
   }
+  kept.sort((a,b)=>a.routeD-b.routeD);
+  return kept;
+}
 
-  // 2) 連続上りの入口/出口に候補
-  if(hillOpts?.before || hillOpts?.after){
-    const th = Number(hillOpts.th)||6;
-    const climbs = detectClimbs(crd, segs, cum, {
-      grade_start: th,
-      grade_keep : Math.max(th-2, 2),
-      min_len: 200,
-      min_gain: 15
+/* ===== 前方バイアスPOIスナップ ===== */
+const CAT_W = { '624':80, '451':70, '443':60, '518':50 };
+function xyMeters(baseLat,A,B){const latm=110540,lonm=111320*Math.cos(baseLat*Math.PI/180);return {x:(B.lon-A.lon)*lonm,y:(B.lat-A.lat)*latm};}
+function localForwardVec(coords,cum,routeD){
+  let i=1;while(i<cum.length&&cum[i]<routeD)i++;
+  const j=Math.max(0,Math.min(coords.length-2,i-1));
+  const A={lat:coords[j][1],lon:coords[j][0]},B={lat:coords[j+1][1],lon:coords[j+1][0]};
+  const base=(A.lat+B.lat)/2; return xyMeters(base,A,B);
+}
+async function nearPoiForwardSnap(cand, categoryIds, coords, cum){
+  const baseLat = coords[0][1];
+  for(const radius of [1000,2000,3500]){
+    const qs=new URLSearchParams({
+      api_key:ORS_KEY,request:'pois',limit:20,sortby:'distance',
+      geometry:JSON.stringify({buffer:radius,geojson:{type:'Point',coordinates:[cand.lon,cand.lat]}}),
+      filters :JSON.stringify({category_ids:categoryIds})
     });
-    for(const c of climbs){
-      if(hillOpts.before){
-        const targetD = Math.max(0, cum[c.start] - (Number(hillOpts.beforeOff)||150));
-        const P = findPointAtRouteD(crd, cum, targetD);
-        await pushUnique(P.lat, P.lon);
-      }
-      if(hillOpts.after){
-        const targetD = Math.min(cum.at(-1), cum[c.end] + (Number(hillOpts.afterOff)||100));
-        const P = findPointAtRouteD(crd, cum, targetD);
-        await pushUnique(P.lat, P.lon);
-      }
-    }
-  }
+    try{
+      const r=await fetch(PROXY+encodeURIComponent(`${ORS_ROOT}/pois?${qs}`));
+      if(!r.ok) continue;
+      const d=await r.json();
+      if(!d.features?.length) continue;
 
-  return res;
+      const v=localForwardVec(coords, cum, cand.routeD);
+      let best=null,bestScore=-1e9;
+      for(const f of d.features){
+        const [plon,plat]=f.geometry.coordinates;
+        const cat=String(f.properties.category_ids?.[0]??'');
+        const wCat=CAT_W[cat]??40;
+        const w=xyMeters(baseLat,{lat:cand.lat,lon:cand.lon},{lat:plat,lon:plon});
+        const dot=v.x*w.x+v.y*w.y;
+        const ahead = dot>=0;
+        // 簡易：candの近傍頂点のrouteDを参照
+        let j=1;while(j<cum.length&&cum[j]<cand.routeD)j++;
+        const poiRouteD=cum[Math.max(0,Math.min(cum.length-1,j))];
+        const backPenalty = (poiRouteD < cand.routeD - 50) ? -800 : 0;
+        const dist=L.latLng(cand.lat,cand.lon).distanceTo([plat,plon]);
+        const score=(-dist)+(ahead?150:-80)+wCat+backPenalty;
+        if(score>bestScore){bestScore=score;best={lat:plat,lon:plon,name:f.properties.name||'休憩'};}
+      }
+      if(best) return best;
+    }catch{}
+  }
+  return {lat:cand.lat,lon:cand.lon,name:'休憩'};
 }
 
-/* ===== グラフ共通（オフスクリーン描画） ===== */
+/* ===== グラフ（共通） ===== */
 function tempShowChartsContainer(show){
-  const charts = $('charts');
-  if(show){
-    charts.style.display = 'block';
-    charts.style.position = 'absolute';
-    charts.style.left = '-99999px';
-    charts.style.top = '0';
-    charts.style.visibility = 'hidden';
-  }else{
-    charts.removeAttribute('style');
-    charts.style.display = 'none';
-  }
+  const c=$('charts');
+  if(show){c.style.display='block';c.style.position='absolute';c.style.left='-99999px';c.style.visibility='hidden';}
+  else{c.removeAttribute('style');c.style.display='none';}
 }
-function prepareCanvasSize(canvas, w=1600, h=900){
-  canvas.width  = w;
-  canvas.height = h;
-}
-
-/* ===== 時間×累積kJ ===== */
-function buildEnergyTimeSeriesBySteps(feature, mass, flat){
-  const coords = feature.geometry.coordinates;
-  const hasEle = coords[0].length >= 3;
-  let cumT = 0, cumE = 0;
-  const tMin=[], eKJ=[];
+function prepareCanvasSize(canvas,w=1600,h=900){canvas.width=w;canvas.height=h;}
+function buildEnergyTimeSeriesBySteps(feature,mass,flat){
+  const coords=feature.geometry.coordinates, hasEle=coords[0].length>=3;
+  let cumT=0,cumE=0; const tMin=[],eKJ=[];
   for(const seg of feature.properties.segments){
     for(const st of seg.steps){
-      const [i0,i1] = st.way_points;
-      const d  = st.distance || 0;
-      const dt = st.duration || 0;
-      const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
-      const dE = energyStepKJ(d,dz,mass,flat);
-      cumT += dt; cumE += dE;
-      tMin.push((cumT/60).toFixed(2));
-      eKJ .push(+cumE.toFixed(1));
+      const [i0,i1]=st.way_points, d=st.distance||0, dt=st.duration||0;
+      const dz=hasEle?((coords[i1][2]||0)-(coords[i0][2]||0)):0;
+      const dE=energyStepKJ(d,dz,mass,flat);
+      cumT+=dt;cumE+=dE;tMin.push((cumT/60).toFixed(2));eKJ.push(+cumE.toFixed(1));
     }
-  }
-  return { labels:tMin, values:eKJ, xlabel:'時間 (分)', ylabel:'累積エネルギー (kJ)', filename:'energy_over_time.png' };
+  }return {labels:tMin,values:eKJ,xlabel:'時間 (分)',ylabel:'累積エネルギー (kJ)',filename:'energy_over_time.png'};
 }
-function downloadEnergyGraphByTime(fastestFeature, mass, flat){
-  if(!fastestFeature){ alert('先にルートを描画してください'); return; }
-  const series = buildEnergyTimeSeriesBySteps(fastestFeature, mass, flat);
-  downloadLineChart(series);
-}
-
-/* ===== 距離×累積kJ ===== */
-function buildEnergyDistanceSeriesBySteps(feature, mass, flat){
-  const coords = feature.geometry.coordinates;
-  const hasEle = coords[0].length >= 3;
-  let cumD = 0, cumE = 0;
-  const km=[], eKJ=[];
+function buildEnergyDistanceSeriesBySteps(feature,mass,flat){
+  const coords=feature.geometry.coordinates, hasEle=coords[0].length>=3;
+  let cumD=0,cumE=0; const km=[],eKJ=[];
   for(const seg of feature.properties.segments){
     for(const st of seg.steps){
-      const [i0,i1] = st.way_points;
-      const d  = st.distance || 0; // m
-      const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
-      const dE = energyStepKJ(d,dz,mass,flat);
-      cumD += d;      // m
-      cumE += dE;     // kJ
-      km .push((cumD/1000).toFixed(2));
-      eKJ.push(+cumE.toFixed(1));
+      const [i0,i1]=st.way_points, d=st.distance||0;
+      const dz=hasEle?((coords[i1][2]||0)-(coords[i0][2]||0)):0;
+      const dE=energyStepKJ(d,dz,mass,flat);
+      cumD+=d;cumE+=dE;km.push((cumD/1000).toFixed(2));eKJ.push(+cumE.toFixed(1));
     }
-  }
-  return { labels:km, values:eKJ, xlabel:'距離 (km)', ylabel:'累積エネルギー (kJ)', filename:'energy_over_distance.png' };
+  }return {labels:km,values:eKJ,xlabel:'距離 (km)',ylabel:'累積エネルギー (kJ)',filename:'energy_over_distance.png'};
 }
-function downloadEnergyGraphByDistance(fastestFeature, mass, flat){
-  if(!fastestFeature){ alert('先にルートを描画してください'); return; }
-  const series = buildEnergyDistanceSeriesBySteps(fastestFeature, mass, flat);
-  downloadLineChart(series);
-}
-
-/* ===== 共有ダウンロード関数 ===== */
-function downloadLineChart({labels, values, xlabel, ylabel, filename}){
+function downloadLineChart({labels,values,xlabel,ylabel,filename}){
   tempShowChartsContainer(true);
-  const ec = $('energyChart');
-  prepareCanvasSize(ec, 1600, 900);
+  const ec=$('energyChart'); prepareCanvasSize(ec,1600,900);
+  const ch=new Chart(ec,{type:'line',data:{labels,datasets:[{label:ylabel,data:values,borderWidth:2,pointRadius:0}]},options:{animation:false,plugins:{legend:{display:false}},scales:{x:{title:{display:true,text:xlabel}},y:{title:{display:true,text:ylabel}}}});  
+  setTimeout(()=>{ec.toBlob(b=>{if(!b){alert('PNG生成失敗');return;}const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);ch.destroy();tempShowChartsContainer(false);},'image/png');},120);
+}
+function downloadEnergyGraphByTime(f,mass,flat){if(!f){alert('先にルートを描画');return;}downloadLineChart(buildEnergyTimeSeriesBySteps(f,mass,flat));}
+function downloadEnergyGraphByDistance(f,mass,flat){if(!f){alert('先にルートを描画');return;}downloadLineChart(buildEnergyDistanceSeriesBySteps(f,mass,flat));}
 
-  const ch = new Chart(ec, {
-    type: 'line',
-    data: { labels, datasets: [{ label: ylabel, data: values, borderWidth:2, pointRadius:0 }] },
-    options: {
-      animation:false,
-      plugins:{ legend:{ display:false } },
-      scales:{
-        x:{ title:{ display:true, text: xlabel } },
-        y:{ title:{ display:true, text: ylabel } }
+/* ===== 休憩ロジック（各機能ON/OFF対応） ===== */
+async function makeRestAdvanced(previewFeature,basis,mass,flat,thr,opts,categoryIds){
+  const coords=previewFeature.geometry.coordinates, segs=previewFeature.properties.segments;
+  const hasEle=coords[0].length>=3;
+  const cum=buildCumDistArray(coords);
+  const total=cum.at(-1);
+
+  const startEx=$('optExclusion').checked ? Number($('startEx').value)||0 : 0;
+  const goalEx =$('optExclusion').checked ? Number($('goalEx').value)||0 : 0;
+  const minGapRoute = $('optMinGap').checked ? Number($('minGapRoute').value)||0 : 0;
+  const useGreedy = $('optGreedy').checked;
+
+  // 禁止帯判定
+  const inExclusion = (routeD)=> (routeD < startEx) || ((total - routeD) < goalEx);
+
+  // ---- 1) 候補生成
+  const cands=[];
+
+  // 1-a) 積算トリガ（任意）
+  if($('optAccum').checked){
+    let acc=0;
+    for(const seg of segs){
+      for(const st of seg.steps){
+        const [i0,i1]=st.way_points, d=st.distance||0, t=st.duration||0;
+        const dz=hasEle?((coords[i1][2]||0)-(coords[i0][2]||0)):0;
+        const dE=energyStepKJ(d,dz,mass,flat);
+        acc += (basis==='time') ? t : dE;
+        if(acc>=thr){
+          const [lon,lat]=coords[i1]; const routeD=cum[i1];
+          cands.push({kind:'ACCUM',lat,lon,routeD});
+          acc=0;
+        }
       }
     }
+  }
+
+  // 1-b) 山の入口/出口（任意）
+  if($('optHillEntry').checked || $('optHillExit').checked){
+    const stepM = Number($('resampleStep').value)||25;
+    const useSmoothing = $('optSmoothing').checked;
+    const useBridge    = $('optBridge').checked;
+    const {S,Z}=resampleByDistance(coords, stepM);
+    const th = Number($('slopeThreshold').value)||6;
+    const keep = Math.max(th-2, 2);
+    const minLen = Number($('minLen').value)||0;
+    const minGain= Number($('minGain').value)||0;
+    const winMed = Number($('winMed').value)||0;
+    const winAvg = Number($('winAvg').value)||0;
+    const bridgeGap = Number($('bridgeGap').value)||0;
+    const {climbs,gSmooth}=detectClimbsSmooth(S,Z,{useSmoothing,winMed,winAvg,stepM,grade_start:th,grade_keep:keep,min_len:minLen,min_gain:minGain,useBridge,bridgeGap});
+
+    const beforeOff=Number($('beforeOffset').value)||0;
+    const afterOff =Number($('afterOffset').value)||0;
+
+    for(const c of climbs){
+      if($('optHillEntry').checked){
+        let entry=c.s - beforeOff; entry=Math.max(0,Math.min(total,entry));
+        entry=adjustToFlatterRouteD(S,gSmooth,entry,120);
+        const P=findPointAtRouteD(coords,cum,entry);
+        cands.push({kind:'ENTRY',lat:P.lat,lon:P.lon,routeD:entry,avg:c.avg,gain:c.gain,gmax:c.gmax});
+      }
+      if($('optHillExit').checked){
+        let exit=c.e + afterOff; exit=Math.max(0,Math.min(total,exit));
+        exit=adjustToFlatterRouteD(S,gSmooth,exit,120);
+        const P=findPointAtRouteD(coords,cum,exit);
+        cands.push({kind:'EXIT',lat:P.lat,lon:P.lon,routeD:exit,avg:c.avg,gain:c.gain,gmax:c.gmax});
+      }
+    }
+  }
+
+  // ゴール近傍（500m）除外 & 禁止帯除外
+  const goalLL=pts.at(-1)?L.latLng(pts.at(-1).lat,pts.at(-1).lon):null;
+  let alive=cands.filter(c=>{
+    if(goalLL && goalLL.distanceTo([c.lat,c.lon])<=CLOSE_TO_GOAL_M) return false;
+    if(inExclusion(c.routeD)) return false;
+    return true;
   });
 
-  setTimeout(()=>{
-    ec.toBlob(b=>{
-      if(!b){ alert('PNG 生成に失敗'); return; }
-      const u=URL.createObjectURL(b);
-      const a=document.createElement('a'); a.href=u; a.download=filename; a.click();
-      setTimeout(()=>URL.revokeObjectURL(u),1000);
-      ch.destroy();
-      tempShowChartsContainer(false);
-    },'image/png');
-  },120);
+  // ---- 2) 最小ルート間隔で選抜（任意）
+  if($('optMinGap').checked) alive=selectByMinGap(alive, minGapRoute, useGreedy);
+  else alive=alive.sort((a,b)=>a.routeD-b.routeD);
+
+  // ---- 3) 上限制約（任意）
+  if($('optMaxCount').checked){
+    const mx = Number($('maxCount').value)||9999;
+    if(alive.length>mx) alive=alive.slice(0,mx);
+  }
+
+  // ---- 4) POI スナップ
+  const out=[];
+  const categoryIds=getSelectedCatIds();
+  for(const c of alive){
+    let poi;
+    if($('optForwardSnap').checked){
+      poi = await nearPoiForwardSnap(c, categoryIds, coords, cum);
+    }else{
+      const f = await nearPoi(c.lat, c.lon, categoryIds);
+      poi = {lat:f.geometry.coordinates[1], lon:f.geometry.coordinates[0], name:f.properties.name||'休憩'};
+    }
+    if(goalLL && goalLL.distanceTo([poi.lat,poi.lon])<=CLOSE_TO_GOAL_M) continue;
+    // 直線距離の近接スキップ
+    if(out.some(r=>distLL(r.lat,r.lon,poi.lat,poi.lon)<MIN_GAP_BETWEEN_RESTS_M)) continue;
+    out.push({name:poi.name,lat:poi.lat,lon:poi.lon,type:'via',isRest:true});
+  }
+
+  return out;
 }
 
-/* ===== ルート描画（連続上り対応版） ===== */
+/* ===== ルート描画 ===== */
 async function drawRoutes(){
   $('btnDownloadTime').disabled=true;
   $('btnDownloadDist').disabled=true;
@@ -473,14 +601,12 @@ async function drawRoutes(){
 
   if(pts.length<2){alert('2地点以上登録してください');return;}
 
-  // レイヤクリア
   Object.values(routeLayers).forEach(l=>l&&map.removeLayer(l)); routeLayers={};
   if(markerLayer) map.removeLayer(markerLayer);
 
   // 以前の休憩を除去
-  pts = pts.filter(p => !p.isRest);
-  fixType();
-  drawList();
+  pts = pts.filter(p=>!p.isRest);
+  fixType(); drawList();
 
   const profile=$('profileSelect').value;
   const mass=Number($('riderWeight').value)+Number($('bikeWeight').value);
@@ -488,43 +614,27 @@ async function drawRoutes(){
   const basis=$('restBasis').value;
   const thr  =basis==='time'?Number($('restMinutes').value)*60:Number($('restKJ').value);
 
-  // 連続上りのオプション
-  const hillOpts = {
-    before: $('restBeforeHill').checked,
-    after : $('restAfterHill').checked,
-    th    : Number($('slopeThreshold').value)||6,
-    beforeOff: Number($('beforeOffset').value)||150,
-    afterOff : Number($('afterOffset').value)||100
-  };
-  const categoryIds = getSelectedCatIds();
-
-  // 休憩プレビュー→挿入
+  // 休憩プレビュー
   try{
     if($('restToggle').checked){
-      const preview=await dir({
-        coordinates:pts.map(p=>[p.lon,p.lat]),
-        elevation:true, extra_info:['steepness'], preference:'fastest'
-      },profile);
-
-      const rests=await makeRest(preview.features[0],basis,mass,flat,thr, hillOpts, categoryIds);
+      const preview=await dir({coordinates:pts.map(p=>[p.lon,p.lat]),elevation:true,extra_info:['steepness'],preference:'fastest'},profile);
+      const rests=await makeRestAdvanced(preview.features[0],basis,mass,flat,thr,{},getSelectedCatIds());
       if(rests.length){
         const insertPos=Math.max(pts.length-1,1);
         pts.splice(insertPos,0,...rests);
-        fixType();
-        drawList();
+        fixType(); drawList();
       }
     }
   }catch(e){console.warn('休憩地点取得失敗',e);}
 
-  // マーカー描画（休憩挿入後）
+  // マーカー
   markerLayer=L.layerGroup().addTo(map);
   pts.forEach(p=>{
     const ic=p.type==='start'?ICONS.start:p.type==='goal'?ICONS.goal:ICONS.via;
-    const mk=L.marker([p.lat,p.lon],{icon:ic}).bindTooltip(p.name+(p.isRest?'（休憩）':''));
-    markerLayer.addLayer(mk);
+    markerLayer.addLayer(L.marker([p.lat,p.lon],{icon:ic}).bindTooltip(p.name+(p.isRest?'（休憩）':'')));
   });
 
-  // ルート本体
+  // ルート描画
   const coords=pts.map(p=>[p.lon,p.lat]), base={coordinates:coords,elevation:true,extra_info:['steepness']};
   try{
     const shortest = await dir({...base,preference:'shortest'},profile);
@@ -536,8 +646,8 @@ async function drawRoutes(){
     }
 
     routeLayers.short=L.geoJSON(shortest.features[0],{pane:'routeShortest',style:{color:'#ff0000',weight:6}}).addTo(map);
-    routeLayers.fast =L.geoJSON(fastest.features[0] ,{pane:'routeFastest' ,style:{color:'#0066ff',weight:6,dashArray:'4 4'}}).addTo(map);
-    routeLayers.slope=L.geoJSON(slope               ,{pane:'routeSlope'  ,style:{color:'#ff9900',weight:6,opacity:0.9}}).addTo(map);
+    routeLayers.fast =L.geoJSON(fastest.features[0] ,{pane:'routeFastest', style:{color:'#0066ff',weight:6,dashArray:'4 4'}}).addTo(map);
+    routeLayers.slope=L.geoJSON(slope               ,{pane:'routeSlope' , style:{color:'#ff9900',weight:6,opacity:0.9}}).addTo(map);
     updateLayerVisibility();
 
     const bounds=new L.LatLngBounds();
