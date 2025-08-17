@@ -539,17 +539,54 @@ function buildEnergyDistanceSeriesBySteps(feature,mass,flat){
 }
 function downloadLineChart(obj){
   tempShowChartsContainer(true);
-  var ec=$('energyChart'); prepareCanvasSize(ec,1600,900);
-  var ch=new Chart(ec,{type:'line',data:{labels:obj.labels,datasets:[{label:obj.ylabel,data:obj.values,borderWidth:2,pointRadius:0}]},
-    options:{animation:false,plugins:{legend:{display:false}},scales:{x:{title:{display:true,text:obj.xlabel}},y:{title:{display:true,text:obj.ylabel}}}};  
+  var ec = $('energyChart'); 
+  prepareCanvasSize(ec,1600,900);
+
+  // 1) datasets を分離
+  var datasets = [{
+    label: obj.ylabel,
+    data: obj.values,
+    borderWidth: 2,
+    pointRadius: 0
+  }];
+
+  // 2) scales を分離
+  var scales = {
+    x: { title: { display: true, text: obj.xlabel } },
+    y: { title: { display: true, text: obj.ylabel } }
+  };
+
+  // 3) plugins を分離
+  var plugins = { legend: { display: false } };
+
+  // 4) Chart 構成を分離
+  var cfg = {
+    type: 'line',
+    data: { labels: obj.labels, datasets: datasets },
+    options: { animation: false, plugins: plugins, scales: scales }
+  };
+
+  // 5) 生成
+  var ch = new Chart(ec, cfg);
+
+  // 6) PNG 保存
   setTimeout(function(){
     ec.toBlob(function(b){
-      if(!b){alert('PNG生成失敗');return;}
-      var u=URL.createObjectURL(b); var a=document.createElement('a'); a.href=u; a.download=obj.filename; a.click();
-      setTimeout(function(){URL.revokeObjectURL(u); ch.destroy(); tempShowChartsContainer(false);},1000);
-    },'image/png');
-  },120);
+      if(!b){ alert('PNG生成失敗'); return; }
+      var u = URL.createObjectURL(b);
+      var a = document.createElement('a');
+      a.href = u;
+      a.download = obj.filename;
+      a.click();
+      setTimeout(function(){
+        URL.revokeObjectURL(u);
+        ch.destroy();
+        tempShowChartsContainer(false);
+      }, 1000);
+    }, 'image/png');
+  }, 120);
 }
+
 function downloadEnergyGraphByTime(f,mass,flat){ if(!f){alert('先にルートを描画');return;} downloadLineChart(buildEnergyTimeSeriesBySteps(f,mass,flat)); }
 function downloadEnergyGraphByDistance(f,mass,flat){ if(!f){alert('先にルートを描画');return;} downloadLineChart(buildEnergyDistanceSeriesBySteps(f,mass,flat)); }
 
@@ -753,4 +790,3 @@ function updateLayerVisibility(){
 </script>
 </body>
 </html>
-
