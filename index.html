@@ -541,7 +541,7 @@ function downloadLineChart(obj){
   tempShowChartsContainer(true);
   var ec=$('energyChart'); prepareCanvasSize(ec,1600,900);
   var ch=new Chart(ec,{type:'line',data:{labels:obj.labels,datasets:[{label:obj.ylabel,data:obj.values,borderWidth:2,pointRadius:0}]},
-    options:{animation:false,plugins:{legend:{display:false}},scales:{x:{title:{display:true,text:obj.xlabel}},y:{title:{display:true,text:obj.ylabel}}}});  
+    options:{animation:false,plugins:{legend:{display:false}},scales:{x:{title:{display:true,text:obj.xlabel}},y:{title:{display:true,text:obj.ylabel}}}};  
   setTimeout(function(){
     ec.toBlob(function(b){
       if(!b){alert('PNG生成失敗');return;}
@@ -753,3 +753,4 @@ function updateLayerVisibility(){
 </script>
 </body>
 </html>
+
