@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>自転車ルート比較＋休憩（入口/出口＆各機能ON/OFF） v5.7.1</title>
+<title>自転車ルート比較＋休憩（入口/出口＆各機能ON/OFF） v5.7.2</title>
 
 <!-- ライブラリ -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
@@ -171,217 +171,253 @@ const DEFAULT_POI_CATS = [451,443,624,518];
 
 const RADII    = [1000,2000,3500];
 const CLOSE_TO_GOAL_M = 500;
-const MIN_GAP_BETWEEN_RESTS_M = 150; // 直線距離の近接スキップ
+const MIN_GAP_BETWEEN_RESTS_M = 150;
 
 /* ===== ヘルパ ===== */
-const $ = id=>document.getElementById(id);
-const sleep = ms=>new Promise(r=>setTimeout(r,ms));
-const icon  = c=>new L.Icon({iconUrl:`https://maps.gstatic.com/mapfiles/ms2/micons/${c}-dot.png`,iconSize:[32,32],iconAnchor:[16,32]});
+function $(id){return document.getElementById(id);}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+function icon(c){return new L.Icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/'+c+'-dot.png',iconSize:[32,32],iconAnchor:[16,32]});}
 const ICONS = {start:icon('green'),via:icon('blue'),goal:icon('red')};
-const formatDist = d=>(d/1000).toFixed(2)+' km';
-const formatDur  = s=>{const m=Math.round(s/60);return m<60?`${m} 分`:`${Math.floor(m/60)} 時間 ${m%60} 分`;};
-const steepSum   = f=>(f.properties.extras.steepness?.values||[]).reduce((s,e)=>s+Math.abs(e[2]||0),0);
+function formatDist(d){return (d/1000).toFixed(2)+' km';}
+function formatDur(s){var m=Math.round(s/60);return m<60? m+' 分' : (Math.floor(m/60)+' 時間 '+(m%60)+' 分');}
+function last(arr){return arr[arr.length-1];}
+function safe(path, fb){try{var v=path(); return (v===undefined||v===null)?fb:v;}catch(e){return fb;}}
+function steepSum(f){
+  var vals=safe(function(){return f.properties.extras.steepness.values;},[]);
+  var s=0; for(var i=0;i<vals.length;i++){ s+=Math.abs(vals[i][2]||0); } return s;
+}
 
 /* ===== 状態 ===== */
-let pts=[], map, markerLayer, routeLayers={}, lastDirTs=0;
-let lastFastest=null,lastMass=0,lastFlat=18;
+var pts=[], map, markerLayer, routeLayers={}, lastDirTs=0;
+var lastFastest=null,lastMass=0,lastFlat=18;
 
 /* ===== 初期化 ===== */
-window.addEventListener('DOMContentLoaded',()=>{
+window.addEventListener('DOMContentLoaded',function(){
   map=L.map('map').setView([34.07,134.55],11);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'©OpenStreetMap'}).addTo(map);
   map.createPane('routeSlope').style.zIndex=690;
   map.createPane('routeShortest').style.zIndex=700;
   map.createPane('routeFastest').style.zIndex=710;
 
-  $('searchBtn').onclick   = ()=>{const q=$('placeInput').value.trim();q&&nomSearch(q);};
+  $('searchBtn').onclick   = function(){var q=$('placeInput').value.trim(); if(q) nomSearch(q);};
   $('locBtn').onclick      = addCurrent;
   $('drawBtn').onclick     = drawRoutes;
 
-  $('btnDownloadTime').onclick = ()=>downloadEnergyGraphByTime(lastFastest,lastMass,lastFlat);
-  $('btnDownloadDist').onclick = ()=>downloadEnergyGraphByDistance(lastFastest,lastMass,lastFlat);
+  $('btnDownloadTime').onclick = function(){downloadEnergyGraphByTime(lastFastest,lastMass,lastFlat);};
+  $('btnDownloadDist').onclick = function(){downloadEnergyGraphByDistance(lastFastest,lastMass,lastFlat);};
 
-  $('restModeBtn').onclick = ()=>{
+  $('restModeBtn').onclick = function(){
     $('restToggle').checked=!$('restToggle').checked;
     $('restModeBtn').textContent='休憩込み: '+($('restToggle').checked?'ON':'OFF');
     drawRoutes();
   };
-  $('restBasis').onchange  = e=>{
-    const v=e.target.value;
-    $('timeBox').style.display=v==='time'?'inline-flex':'none';
-    $('energyBox').style.display=v==='energy'?'inline-flex':'none';
+  $('restBasis').onchange  = function(e){
+    var v=e.target.value;
+    $('timeBox').style.display=(v==='time'?'inline-flex':'none');
+    $('energyBox').style.display=(v==='energy'?'inline-flex':'none');
   };
-  document.addEventListener('click',e=>{
-    const b=e.target.closest('.presetKJ'); if(b) $('restKJ').value=b.dataset.kj;
+  document.addEventListener('click',function(e){
+    var b=e.target.closest?e.target.closest('.presetKJ'):null;
+    if(b) $('restKJ').value=b.getAttribute('data-kj');
   });
   initSortable();
 });
 
 /* ===== 検索 ===== */
 async function nomSearch(q){
-  let url=`https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(q)}`;
+  var url='https://nominatim.openstreetmap.org/search?format=json&limit=10&q='+encodeURIComponent(q);
   if($('nearbyOnly').checked){
-    const b=map.getBounds();
-    url+=`&viewbox=${[b.getWest(),b.getNorth(),b.getEast(),b.getSouth()].join(',')}&bounded=1`;
+    var b=map.getBounds();
+    url+='&viewbox='+[b.getWest(),b.getNorth(),b.getEast(),b.getSouth()].join(',')+'&bounded=1';
   }
-  const arr=await (await fetch(url)).json();
-  const ul=$('searchResults'); ul.innerHTML=''; ul.hidden=!arr.length;
-  arr.forEach(o=>{
-    const li=document.createElement('li'); li.textContent=o.display_name;
-    li.onclick=()=>{addPoint({name:o.display_name,lat:+o.lat,lon:+o.lon});ul.hidden=true;$('placeInput').value='';};
+  var arr=await (await fetch(url)).json();
+  var ul=$('searchResults'); ul.innerHTML=''; ul.hidden=!arr.length;
+  arr.forEach(function(o){
+    var li=document.createElement('li'); li.textContent=o.display_name;
+    li.onclick=function(){addPoint({name:o.display_name,lat:+o.lat,lon:+o.lon});ul.hidden=true;$('placeInput').value='';};
     ul.appendChild(li);
   });
 }
 
 /* ===== リスト ===== */
-function addPoint(p){p.type=pts.length?'':'start';pts.forEach(d=>d.type==='goal'&&(d.type='via'));pts.push(p);if(pts.length>1)pts.at(-1).type='goal';drawList();}
+function addPoint(p){p.type=pts.length?'':'start'; pts.forEach(function(d){if(d.type==='goal') d.type='via';}); pts.push(p); if(pts.length>1) pts[pts.length-1].type='goal'; drawList();}
 function drawList(){
-  const ul=$('pointList');ul.innerHTML='';
-  pts.forEach((p,i)=>{
-    const li=document.createElement('li');li._idx=i;
-    li.innerHTML=`<span>${p.name}${p.isRest?'（休憩）':''}</span>`;
-    const del=document.createElement('button');del.className='del';del.textContent='×';
-    del.onclick=e=>{e.stopPropagation();pts.splice(i,1);fixType();drawList();};
-    ul.appendChild(li);li.appendChild(del);
+  var ul=$('pointList'); ul.innerHTML='';
+  pts.forEach(function(p,i){
+    var li=document.createElement('li'); li._idx=i;
+    li.innerHTML='<span>'+p.name+(p.isRest?'（休憩）':'')+'</span>';
+    var del=document.createElement('button'); del.className='del'; del.textContent='×';
+    del.onclick=function(e){e.stopPropagation(); pts.splice(i,1); fixType(); drawList();};
+    ul.appendChild(li); li.appendChild(del);
   });
 }
-function fixType(){if(pts[0])pts[0].type='start';if(pts.length>1)pts.at(-1).type='goal';}
-function initSortable(){new Sortable($('pointList'),{animation:150,handle:'span',onEnd:()=>{pts=Array.from($('pointList').children).map(li=>pts[li._idx]);fixType();drawList();}});}
+function fixType(){ if(pts[0]) pts[0].type='start'; if(pts.length>1) pts[pts.length-1].type='goal'; }
+function initSortable(){ new Sortable($('pointList'),{animation:150,handle:'span',onEnd:function(){pts=Array.prototype.slice.call($('pointList').children).map(function(li){return pts[li._idx];}); fixType(); drawList();}}); }
 
 /* ===== 現在地 ===== */
-function addCurrent(){navigator.geolocation.getCurrentPosition(p=>addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude}),()=>alert('現在地取得失敗'));}
+function addCurrent(){navigator.geolocation.getCurrentPosition(function(p){addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude});},function(){alert('現在地取得失敗');});}
 
 /* ===== ORS ===== */
-async function post(url,body){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':ORS_KEY},body:JSON.stringify(body)});if(!r.ok) throw new Error(r.status);return r.json();}
-async function dir(body,profile){const wait=1100-(Date.now()-lastDirTs);if(wait>0) await sleep(wait);const d=await post(`${ORS_ROOT}/v2/directions/${profile}/geojson`,body);lastDirTs=Date.now();return d;}
+async function post(url,body){
+  var r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':ORS_KEY},body:JSON.stringify(body)});
+  if(!r.ok) throw new Error(r.status); return r.json();
+}
+async function dir(body,profile){
+  var wait=1100-(Date.now()-lastDirTs); if(wait>0) await sleep(wait);
+  var d=await post(ORS_ROOT+'/v2/directions/'+profile+'/geojson',body); lastDirTs=Date.now(); return d;
+}
 
 /* ===== POIカテゴリ ===== */
 function getSelectedCatIds(){
-  const custom = $('customCats').value.trim();
+  var custom=$('customCats').value.trim();
   if(custom){
-    const arr = custom.split(',').map(s=>+s.trim()).filter(n=>Number.isFinite(n));
+    var arr=custom.split(',').map(function(s){return +s.trim();}).filter(function(n){return isFinite(n);});
     if(arr.length) return arr;
   }
-  const boxes = [...document.querySelectorAll('#poiCats input[type=checkbox]')];
-  const sel = boxes.filter(b=>b.checked).map(b=>+b.dataset.cat);
-  return sel.length ? sel : DEFAULT_POI_CATS.slice();
+  var boxes=[].slice.call(document.querySelectorAll('#poiCats input[type=checkbox]'));
+  var sel=boxes.filter(function(b){return b.checked;}).map(function(b){return +b.getAttribute('data-cat');});
+  return sel.length? sel : DEFAULT_POI_CATS.slice();
 }
 
 /* ===== POI検索（シンプル） ===== */
 async function nearPoi(lat,lon,categoryIds){
-  for(const buf of RADII){
-    const qs=new URLSearchParams({
+  for(var i=0;i<RADII.length;i++){
+    var buf=RADII[i];
+    var qs=new URLSearchParams({
       api_key:ORS_KEY,request:'pois',limit:20,sortby:'distance',
       geometry:JSON.stringify({buffer:buf,geojson:{type:'Point',coordinates:[lon,lat]}}),
-      filters :JSON.stringify({category_ids:categoryIds})
+      filters:JSON.stringify({category_ids:categoryIds})
     });
     try{
-      const r=await fetch(PROXY+encodeURIComponent(`${ORS_ROOT}/pois?${qs}`));
+      var r=await fetch(PROXY+encodeURIComponent(ORS_ROOT+'/pois?'+qs.toString()));
       if(!r.ok) throw new Error();
-      const d=await r.json();
-      if(d.features?.length) return d.features[0];
+      var d=await r.json();
+      if(d && d.features && d.features.length) return d.features[0];
     }catch(e){}
   }
   return {geometry:{coordinates:[lon,lat]},properties:{name:'休憩'}};
 }
 
-const isClose=(lat,lon)=>{const g=pts.at(-1);return g?L.latLng(lat,lon).distanceTo([g.lat,g.lon])<=CLOSE_TO_GOAL_M:false;};
-const distLL=(aLat,aLon,bLat,bLon)=>L.latLng(aLat,aLon).distanceTo([bLat,bLon]);
+function isClose(lat,lon){
+  var g=pts.length? pts[pts.length-1] : null;
+  return g? L.latLng(lat,lon).distanceTo([g.lat,g.lon])<=CLOSE_TO_GOAL_M : false;
+}
+function distLL(aLat,aLon,bLat,bLon){return L.latLng(aLat,aLon).distanceTo([bLat,bLon]);}
 
 /* ===== エネルギー ===== */
-const energyStepKJ=(d,dz,m,flat)=>flat*(d/1000)+Math.max(dz,0)*m*9.80665/1000;
+function energyStepKJ(d,dz,m,flat){return flat*(d/1000)+Math.max(dz,0)*m*9.80665/1000;}
 
 /* ===== 距離累積と補間 ===== */
 function buildCumDistArray(coords){
-  const cd=[0];
-  for(let i=1;i<coords.length;i++){
-    const [lon,lat]=coords[i], [plon,plat]=coords[i-1];
+  var cd=[0];
+  for(var i=1;i<coords.length;i++){
+    var lon=coords[i][0], lat=coords[i][1], plon=coords[i-1][0], plat=coords[i-1][1];
     cd[i]=cd[i-1]+L.latLng(lat,lon).distanceTo([plat,plon]);
   }
   return cd;
 }
+function totalDist(cum){return cum[cum.length-1];}
 function findPointAtRouteD(coords, cum, targetD){
-  if(targetD<=0){ const [lon,lat]=coords[0]; return {lat,lon}; }
-  const total=cum.at(-1);
-  if(targetD>=total){ const [lon,lat]=coords.at(-1); return {lat,lon}; }
-  let i=1; while(i<coords.length && cum[i]<targetD) i++;
-  const i0=i-1, i1=i, d=cum[i1]-cum[i0]||1, r=(targetD-cum[i0])/d;
-  const [lon0,lat0]=coords[i0], [lon1,lat1]=coords[i1];
+  if(targetD<=0){ return {lat:coords[0][1], lon:coords[0][0]}; }
+  var total=totalDist(cum);
+  if(targetD>=total){ var Lp=coords[coords.length-1]; return {lat:Lp[1],lon:Lp[0]}; }
+  var i=1; while(i<coords.length && cum[i]<targetD) i++;
+  var i0=i-1, i1=i, d=cum[i1]-cum[i0]||1, r=(targetD-cum[i0])/d;
+  var lon0=coords[i0][0], lat0=coords[i0][1], lon1=coords[i1][0], lat1=coords[i1][1];
   return {lat: lat0+(lat1-lat0)*r, lon: lon0+(lon1-lon0)*r};
 }
 
 /* ===== 等間隔リサンプリング＆平滑化 ===== */
-// 窓幅を安全に“奇数”へ丸めるユーティリティ
 function toOddWindow(n){
-  const v = Math.max(1, Math.round(Number(n) || 0));
-  return (v % 2 === 1) ? v : v + 1;
+  var v=Math.max(1, Math.round(Number(n)||0));
+  return (v%2===1)? v : v+1;
 }
-
-function resampleByDistance(coords, stepM=25){
-  const cum=buildCumDistArray(coords);
-  const total=cum.at(-1);
-  const S=[], Z=[];
-  for(let s=0;s<=total;s+=stepM){
-    let i=1; while(i<cum.length && cum[i]<s) i++;
-    const i0=i-1, i1=i, d=cum[i1]-cum[i0]||1, r=(s-cum[i0])/d;
-    const [lon0,lat0,z0=0]=coords[i0], [lon1,lat1,z1=0]=coords[i1];
+function resampleByDistance(coords, stepM){
+  stepM = Number(stepM)||25;
+  var cum=buildCumDistArray(coords);
+  var total=totalDist(cum);
+  var S=[], Z=[];
+  for(var s=0;s<=total;s+=stepM){
+    var i=1; while(i<cum.length && cum[i]<s) i++;
+    var i0=i-1, i1=i, d=cum[i1]-cum[i0]||1, r=(s-cum[i0])/d;
+    var z0=coords[i0][2]||0, z1=coords[i1][2]||0;
     Z.push(z0+(z1-z0)*r); S.push(s);
   }
-  if(S.at(-1)!==total){ S.push(total); Z.push(coords.at(-1)[2]||Z.at(-1)); }
-  return {S,Z,total,cum};
+  if(S[S.length-1]!==total){ S.push(total); Z.push(coords[coords.length-1][2]||Z[Z.length-1]); }
+  return {S:S,Z:Z,total:total,cum:cum};
 }
 function gradientSeries(S,Z){
-  const g=Array(S.length).fill(0);
-  for(let i=1;i<S.length;i++){
-    const dz=Z[i]-Z[i-1], ds=S[i]-S[i-1]||1;
+  var g=new Array(S.length); g[0]=0;
+  for(var i=1;i<S.length;i++){
+    var dz=Z[i]-Z[i-1], ds=S[i]-S[i-1]||1;
     g[i]=dz>0?(dz/ds)*100:0;
   }
   return g;
 }
-function movingMedian(a, win){const r=[],k=Math.max(0,Math.floor(win/2));for(let i=0;i<a.length;i++){const s=Math.max(0,i-k),e=Math.min(a.length-1,i+k);const w=a.slice(s,e+1).slice().sort((x,y)=>x-y);r.push(w[Math.floor(w.length/2)]);}return r;}
-function movingAverage(a, win){const r=[],k=Math.max(0,Math.floor(win/2));for(let i=0;i<a.length;i++){let s=0,c=0;for(let j=Math.max(0,i-k);j<=Math.min(a.length-1,i+k);j++){s+=a[j];c++;}r.push(s/c);}return r;}
+function movingMedian(a, win){
+  var r=[],k=Math.max(0,Math.floor(win/2));
+  for(var i=0;i<a.length;i++){
+    var s=Math.max(0,i-k), e=Math.min(a.length-1,i+k);
+    var w=a.slice(s,e+1).slice().sort(function(x,y){return x-y;});
+    r.push(w[Math.floor(w.length/2)]);
+  }
+  return r;
+}
+function movingAverage(a, win){
+  var r=[],k=Math.max(0,Math.floor(win/2));
+  for(var i=0;i<a.length;i++){
+    var s=0,c=0;
+    for(var j=Math.max(0,i-k); j<=Math.min(a.length-1,i+k); j++){ s+=a[j]; c++; }
+    r.push(s/c);
+  }
+  return r;
+}
 
-/* ===== 山の抽出（スムーズ/ヒステリシス/橋渡し） ===== */
+/* ===== 山の抽出 ===== */
 function detectClimbsSmooth(S,Z,opt){
-  const gRaw=gradientSeries(S,Z);
-  let g=gRaw;
+  var gRaw=gradientSeries(S,Z);
+  var g=gRaw;
   if(opt.useSmoothing){
-    const wMed = toOddWindow((opt.winMed || 0) / (opt.stepM || 1));
-    const wAvg = toOddWindow((opt.winAvg || 0) / (opt.stepM || 1));
+    var wMed = toOddWindow((opt.winMed || 0) / (opt.stepM || 1));
+    var wAvg = toOddWindow((opt.winAvg || 0) / (opt.stepM || 1));
     g=movingAverage(movingMedian(gRaw,wMed),wAvg);
   }
-  const climbs=[];
-  let inClimb=false,startIdx=0,gain=0,len=0,maxg=0,lastHi=0;
-  const grade_start=opt.grade_start, grade_keep=opt.grade_keep;
-  const bridge_gap=opt.useBridge?opt.bridgeGap:0;
+  var climbs=[];
+  var inClimb=false,startIdx=0,gain=0,len=0,maxg=0,lastHi=0;
+  var grade_start=opt.grade_start, grade_keep=opt.grade_keep;
+  var bridge_gap=opt.useBridge?opt.bridgeGap:0;
 
-  const pushIfValid=(endIdx)=>{
+  function pushIfValid(endIdx){
     if(len>=opt.min_len || gain>=opt.min_gain){
-      climbs.push({s:S[startIdx],e:S[endIdx],len,gain,avg:(gain/Math.max(1,len))*100,gmax:maxg});
+      climbs.push({s:S[startIdx],e:S[endIdx],len:len,gain:gain,avg:(gain/Math.max(1,len))*100,gmax:maxg});
     }
-  };
+  }
 
-  for(let i=1;i<g.length;i++){
-    const ds=S[i]-S[i-1], dz=Math.max(Z[i]-Z[i-1],0), gi=g[i];
+  for(var i=1;i<g.length;i++){
+    var ds=S[i]-S[i-1], dz=Math.max(Z[i]-Z[i-1],0), gi=g[i];
     if(!inClimb){
       if(gi>=grade_start){inClimb=true;startIdx=i-1;gain=dz;len=ds;maxg=gi;lastHi=i;}
     }else{
       if(gi>=grade_keep){gain+=dz;len+=ds;if(gi>maxg)maxg=gi;lastHi=i;}
       else{
-        const gap=S[i]-S[lastHi];
+        var gap=S[i]-S[lastHi];
         if(gap>bridge_gap){pushIfValid(i-1);inClimb=false;gain=0;len=0;maxg=0;}
         else{len+=ds;gain+=dz;}
       }
     }
   }
   if(inClimb) pushIfValid(g.length-1);
-  return {climbs,gSmooth:g};
+  return {climbs:climbs,gSmooth:g};
 }
-function adjustToFlatterRouteD(S,gSmooth,routeD,winM=120){
-  let idx=S.findIndex(s=>s>=routeD); if(idx<0) idx=S.length-1;
-  const w=Math.max(1,Math.round(winM/ (S[1]-S[0] || 1)));
-  let bestIdx=idx,best=Infinity;
-  for(let j=Math.max(0,idx-w);j<=Math.min(S.length-1,idx+w);j++){
+function adjustToFlatterRouteD(S,gSmooth,routeD,winM){
+  winM = Number(winM)||120;
+  var idx=-1;
+  for(var i=0;i<S.length;i++){ if(S[i]>=routeD){ idx=i; break; } }
+  if(idx<0) idx=S.length-1;
+  var step = (S[1]-S[0]) || 1;
+  var w=Math.max(1,Math.round(winM/step));
+  var bestIdx=idx,best=Infinity;
+  for(var j=Math.max(0,idx-w); j<=Math.min(S.length-1,idx+w); j++){
     if(gSmooth[j]<best){best=gSmooth[j];bestIdx=j;}
   }
   return S[bestIdx];
@@ -389,61 +425,74 @@ function adjustToFlatterRouteD(S,gSmooth,routeD,winM=120){
 
 /* ===== 候補スコア＆選抜 ===== */
 function scoreCandidate(c){
-  const base = c.kind==='ENTRY'?3:(c.kind==='EXIT'?2:1);
-  const bonus=(c.avg||0)*0.1 + (c.gain||0)*0.002 + (c.gmax||0)*0.05;
+  var base = c.kind==='ENTRY'?3:(c.kind==='EXIT'?2:1);
+  var bonus=(c.avg||0)*0.1 + (c.gain||0)*0.002 + (c.gmax||0)*0.05;
   return base+bonus;
 }
-function selectByMinGap(cands, minGapRoute=1200, useGreedy=true){
-  if(!useGreedy) return cands.slice().sort((a,b)=>a.routeD-b.routeD);
-  cands.forEach(c=>c.score=scoreCandidate(c));
-  cands.sort((a,b)=>b.score-a.score);
-  const kept=[];
-  for(const c of cands){
-    if(kept.every(k=>Math.abs(k.routeD-c.routeD)>=minGapRoute)) kept.push(c);
-  }
-  kept.sort((a,b)=>a.routeD-b.routeD);
+function selectByMinGap(cands, minGapRoute, useGreedy){
+  minGapRoute = Number(minGapRoute)||1200;
+  useGreedy = (useGreedy!==false);
+  if(!useGreedy){ return cands.slice().sort(function(a,b){return a.routeD-b.routeD;}); }
+  cands.forEach(function(c){ c.score=scoreCandidate(c); });
+  cands.sort(function(a,b){return b.score-a.score;});
+  var kept=[];
+  cands.forEach(function(c){
+    var ok=true;
+    for(var i=0;i<kept.length;i++){ if(Math.abs(kept[i].routeD-c.routeD)<minGapRoute){ ok=false; break; } }
+    if(ok) kept.push(c);
+  });
+  kept.sort(function(a,b){return a.routeD-b.routeD;});
   return kept;
 }
 
 /* ===== 前方バイアスPOIスナップ ===== */
-const CAT_W = { '624':80, '451':70, '443':60, '518':50 };
-function xyMeters(baseLat,A,B){const latm=110540,lonm=111320*Math.cos(baseLat*Math.PI/180);return {x:(B.lon-A.lon)*lonm,y:(B.lat-A.lat)*latm};}
+var CAT_W = { '624':80, '451':70, '443':60, '518':50 };
+function xyMeters(baseLat,A,B){
+  var latm=110540, lonm=111320*Math.cos(baseLat*Math.PI/180);
+  return {x:(B.lon-A.lon)*lonm, y:(B.lat-A.lat)*latm};
+}
 function localForwardVec(coords,cum,routeD){
-  let i=1;while(i<cum.length&&cum[i]<routeD)i++;
-  const j=Math.max(0,Math.min(coords.length-2,i-1));
-  const A={lat:coords[j][1],lon:coords[j][0]},B={lat:coords[j+1][1],lon:coords[j+1][0]};
-  const base=(A.lat+B.lat)/2; return xyMeters(base,A,B);
+  var i=1; while(i<cum.length && cum[i]<routeD) i++;
+  var j=Math.max(0, Math.min(coords.length-2, i-1));
+  var A={lat:coords[j][1],lon:coords[j][0]}, B={lat:coords[j+1][1],lon:coords[j+1][0]};
+  var base=(A.lat+B.lat)/2; return xyMeters(base,A,B);
 }
 async function nearPoiForwardSnap(cand, categoryIds, coords, cum){
-  const baseLat = coords[0][1];
-  for(const radius of [1000,2000,3500]){
-    const qs=new URLSearchParams({
+  var baseLat = coords[0][1];
+  var radii=[1000,2000,3500];
+  for(var ri=0;ri<radii.length;ri++){
+    var radius=radii[ri];
+    var qs=new URLSearchParams({
       api_key:ORS_KEY,request:'pois',limit:20,sortby:'distance',
       geometry:JSON.stringify({buffer:radius,geojson:{type:'Point',coordinates:[cand.lon,cand.lat]}}),
-      filters :JSON.stringify({category_ids:categoryIds})
+      filters:JSON.stringify({category_ids:categoryIds})
     });
     try{
-      const r=await fetch(PROXY+encodeURIComponent(`${ORS_ROOT}/pois?${qs}`));
+      var r=await fetch(PROXY+encodeURIComponent(ORS_ROOT+'/pois?'+qs.toString()));
       if(!r.ok) continue;
-      const d=await r.json();
-      if(!d.features?.length) continue;
+      var d=await r.json();
+      if(!(d && d.features && d.features.length)) continue;
 
-      const v=localForwardVec(coords, cum, cand.routeD);
-      let best=null,bestScore=-1e9;
-      for(const f of d.features){
-        const [plon,plat]=f.geometry.coordinates;
-        const cat=String(f.properties.category_ids?.[0]??'');
-        const wCat=CAT_W[cat]??40;
-        const w=xyMeters(baseLat,{lat:cand.lat,lon:cand.lon},{lat:plat,lon:plon});
-        const dot=v.x*w.x+v.y*w.y;
-        const ahead = dot>=0;
-        // 簡易：candの近傍頂点のrouteDを参照
-        let j=1;while(j<cum.length&&cum[j]<cand.routeD)j++;
-        const poiRouteD=cum[Math.max(0,Math.min(cum.length-1,j))];
-        const backPenalty = (poiRouteD < cand.routeD - 50) ? -800 : 0;
-        const dist=L.latLng(cand.lat,cand.lon).distanceTo([plat,plon]);
-        const score=(-dist)+(ahead?150:-80)+wCat+backPenalty;
-        if(score>bestScore){bestScore=score;best={lat:plat,lon:plon,name:f.properties.name||'休憩'};}
+      var v=localForwardVec(coords, cum, cand.routeD);
+      var best=null,bestScore=-1e9;
+      for(var k=0;k<d.features.length;k++){
+        var f=d.features[k];
+        var plon=f.geometry.coordinates[0], plat=f.geometry.coordinates[1];
+        var cats=(f.properties && f.properties.category_ids) ? f.properties.category_ids : [];
+        var cat=String(cats.length?cats[0]:'');
+        var wCat = CAT_W.hasOwnProperty(cat)? CAT_W[cat] : 40;
+
+        var w=xyMeters(baseLat,{lat:cand.lat,lon:cand.lon},{lat:plat,lon:plon});
+        var dot=v.x*w.x+v.y*w.y;
+        var ahead = dot>=0;
+
+        var j=1; while(j<cum.length && cum[j]<cand.routeD) j++;
+        var poiRouteD=cum[Math.max(0,Math.min(cum.length-1,j))];
+
+        var backPenalty = (poiRouteD < cand.routeD - 50) ? -800 : 0;
+        var dist=L.latLng(cand.lat,cand.lon).distanceTo([plat,plon]);
+        var score=(-dist)+(ahead?150:-80)+wCat+backPenalty;
+        if(score>bestScore){bestScore=score;best={lat:plat,lon:plon,name:(f.properties&&f.properties.name)?f.properties.name:'休憩'};}
       }
       if(best) return best;
     }catch(e){}
@@ -451,151 +500,166 @@ async function nearPoiForwardSnap(cand, categoryIds, coords, cum){
   return {lat:cand.lat,lon:cand.lon,name:'休憩'};
 }
 
-/* ===== グラフ（共通） ===== */
+/* ===== グラフ ===== */
 function tempShowChartsContainer(show){
-  const c=$('charts');
+  var c=$('charts');
   if(show){c.style.display='block';c.style.position='absolute';c.style.left='-99999px';c.style.visibility='hidden';}
   else{c.removeAttribute('style');c.style.display='none';}
 }
-function prepareCanvasSize(canvas,w=1600,h=900){canvas.width=w;canvas.height=h;}
+function prepareCanvasSize(canvas,w,h){canvas.width=w||1600;canvas.height=h||900;}
 function buildEnergyTimeSeriesBySteps(feature,mass,flat){
-  const coords=feature.geometry.coordinates, hasEle=coords[0].length>=3;
-  let cumT=0,cumE=0; const tMin=[],eKJ=[];
-  for(const seg of feature.properties.segments){
-    for(const st of seg.steps){
-      const [i0,i1]=st.way_points, d=st.distance||0, dt=st.duration||0;
-      const dz=hasEle?((coords[i1][2]||0)-(coords[i0][2]||0)):0;
-      const dE=energyStepKJ(d,dz,mass,flat);
-      cumT+=dt;cumE+=dE;tMin.push((cumT/60).toFixed(2));eKJ.push(+cumE.toFixed(1));
+  var coords=feature.geometry.coordinates, hasEle=(coords[0].length>=3);
+  var cumT=0,cumE=0, tMin=[],eKJ=[];
+  var segs=feature.properties.segments||[];
+  for(var si=0;si<segs.length;si++){
+    var steps=segs[si].steps||[];
+    for(var st=0;st<steps.length;st++){
+      var wp=steps[st].way_points||[0,0], i0=wp[0], i1=wp[1], d=steps[st].distance||0, dt=steps[st].duration||0;
+      var dz=hasEle? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
+      var dE=energyStepKJ(d,dz,mass,flat);
+      cumT+=dt; cumE+=dE; tMin.push((cumT/60).toFixed(2)); eKJ.push(+cumE.toFixed(1));
     }
-  }return {labels:tMin,values:eKJ,xlabel:'時間 (分)',ylabel:'累積エネルギー (kJ)',filename:'energy_over_time.png'};
+  }
+  return {labels:tMin,values:eKJ,xlabel:'時間 (分)',ylabel:'累積エネルギー (kJ)',filename:'energy_over_time.png'};
 }
 function buildEnergyDistanceSeriesBySteps(feature,mass,flat){
-  const coords=feature.geometry.coordinates, hasEle=coords[0].length>=3;
-  let cumD=0,cumE=0; const km=[],eKJ=[];
-  for(const seg of feature.properties.segments){
-    for(const st of seg.steps){
-      const [i0,i1]=st.way_points, d=st.distance||0;
-      const dz=hasEle?((coords[i1][2]||0)-(coords[i0][2]||0)):0;
-      const dE=energyStepKJ(d,dz,mass,flat);
-      cumD+=d;cumE+=dE;km.push((cumD/1000).toFixed(2));eKJ.push(+cumE.toFixed(1));
+  var coords=feature.geometry.coordinates, hasEle=(coords[0].length>=3);
+  var cumD=0,cumE=0, km=[],eKJ=[];
+  var segs=feature.properties.segments||[];
+  for(var si=0;si<segs.length;si++){
+    var steps=segs[si].steps||[];
+    for(var st=0;st<steps.length;st++){
+      var wp=steps[st].way_points||[0,0], i0=wp[0], i1=wp[1], d=steps[st].distance||0;
+      var dz=hasEle? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
+      var dE=energyStepKJ(d,dz,mass,flat);
+      cumD+=d; cumE+=dE; km.push((cumD/1000).toFixed(2)); eKJ.push(+cumE.toFixed(1));
     }
-  }return {labels:km,values:eKJ,xlabel:'距離 (km)',ylabel:'累積エネルギー (kJ)',filename:'energy_over_distance.png'};
+  }
+  return {labels:km,values:eKJ,xlabel:'距離 (km)',ylabel:'累積エネルギー (kJ)',filename:'energy_over_distance.png'};
 }
-function downloadLineChart({labels,values,xlabel,ylabel,filename}){
+function downloadLineChart(obj){
   tempShowChartsContainer(true);
-  const ec=$('energyChart'); prepareCanvasSize(ec,1600,900);
-  const ch=new Chart(ec,{type:'line',data:{labels,datasets:[{label:ylabel,data:values,borderWidth:2,pointRadius:0}]},options:{animation:false,plugins:{legend:{display:false}},scales:{x:{title:{display:true,text:xlabel}},y:{title:{display:true,text:ylabel}}}});  
-  setTimeout(()=>{ec.toBlob(b=>{if(!b){alert('PNG生成失敗');return;}const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);ch.destroy();tempShowChartsContainer(false);},'image/png');},120);
+  var ec=$('energyChart'); prepareCanvasSize(ec,1600,900);
+  var ch=new Chart(ec,{type:'line',data:{labels:obj.labels,datasets:[{label:obj.ylabel,data:obj.values,borderWidth:2,pointRadius:0}]},
+    options:{animation:false,plugins:{legend:{display:false}},scales:{x:{title:{display:true,text:obj.xlabel}},y:{title:{display:true,text:obj.ylabel}}}});  
+  setTimeout(function(){
+    ec.toBlob(function(b){
+      if(!b){alert('PNG生成失敗');return;}
+      var u=URL.createObjectURL(b); var a=document.createElement('a'); a.href=u; a.download=obj.filename; a.click();
+      setTimeout(function(){URL.revokeObjectURL(u); ch.destroy(); tempShowChartsContainer(false);},1000);
+    },'image/png');
+  },120);
 }
-function downloadEnergyGraphByTime(f,mass,flat){if(!f){alert('先にルートを描画');return;}downloadLineChart(buildEnergyTimeSeriesBySteps(f,mass,flat));}
-function downloadEnergyGraphByDistance(f,mass,flat){if(!f){alert('先にルートを描画');return;}downloadLineChart(buildEnergyDistanceSeriesBySteps(f,mass,flat));}
+function downloadEnergyGraphByTime(f,mass,flat){ if(!f){alert('先にルートを描画');return;} downloadLineChart(buildEnergyTimeSeriesBySteps(f,mass,flat)); }
+function downloadEnergyGraphByDistance(f,mass,flat){ if(!f){alert('先にルートを描画');return;} downloadLineChart(buildEnergyDistanceSeriesBySteps(f,mass,flat)); }
 
-/* ===== 休憩ロジック（各機能ON/OFF対応） ===== */
+/* ===== 休憩ロジック ===== */
 async function makeRestAdvanced(previewFeature,basis,mass,flat,thr,opts,categoryIds){
-  const coords=previewFeature.geometry.coordinates, segs=previewFeature.properties.segments;
-  const hasEle=coords[0].length>=3;
-  const cum=buildCumDistArray(coords);
-  const total=cum.at(-1);
+  var coords=previewFeature.geometry.coordinates;
+  var segs=safe(function(){return previewFeature.properties.segments;},[])||[];
+  var hasEle=(coords[0].length>=3);
+  var cum=buildCumDistArray(coords);
+  var total=totalDist(cum);
 
-  const startEx=$('optExclusion').checked ? Number($('startEx').value)||0 : 0;
-  const goalEx =$('optExclusion').checked ? Number($('goalEx').value)||0 : 0;
-  const minGapRoute = $('optMinGap').checked ? Number($('minGapRoute').value)||0 : 0;
-  const useGreedy = $('optGreedy').checked;
+  var startEx = $('optExclusion').checked ? (Number($('startEx').value)||0) : 0;
+  var goalEx  = $('optExclusion').checked ? (Number($('goalEx').value)||0) : 0;
+  var minGapRoute = $('optMinGap').checked ? (Number($('minGapRoute').value)||0) : 0;
+  var useGreedy = $('optGreedy').checked;
 
-  // 禁止帯判定
-  const inExclusion = (routeD)=> (routeD < startEx) || ((total - routeD) < goalEx);
+  function inExclusion(routeD){ return (routeD<startEx) || ((total-routeD)<goalEx); }
 
-  // ---- 1) 候補生成
-  const cands=[];
+  var cands=[];
 
-  // 1-a) 積算トリガ（任意）
+  // 積算
   if($('optAccum').checked){
-    let acc=0;
-    for(const seg of segs){
-      for(const st of seg.steps){
-        const [i0,i1]=st.way_points, d=st.distance||0, t=st.duration||0;
-        const dz=hasEle?((coords[i1][2]||0)-(coords[i0][2]||0)):0;
-        const dE=energyStepKJ(d,dz,mass,flat);
+    var acc=0;
+    for(var si=0;si<segs.length;si++){
+      var steps=segs[si].steps||[];
+      for(var st=0;st<steps.length;st++){
+        var wp=steps[st].way_points||[0,0], i0=wp[0], i1=wp[1], d=steps[st].distance||0, t=steps[st].duration||0;
+        var dz=hasEle? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
+        var dE=energyStepKJ(d,dz,mass,flat);
         acc += (basis==='time') ? t : dE;
         if(acc>=thr){
-          const [lon,lat]=coords[i1]; const routeD=cum[i1];
-          cands.push({kind:'ACCUM',lat,lon,routeD});
+          var Pacc={lat:coords[i1][1], lon:coords[i1][0], routeD:cum[i1]};
+          cands.push({kind:'ACCUM',lat:Pacc.lat,lon:Pacc.lon,routeD:Pacc.routeD});
           acc=0;
         }
       }
     }
   }
 
-  // 1-b) 山の入口/出口（任意）
+  // 山の入口/出口
   if($('optHillEntry').checked || $('optHillExit').checked){
-    const stepM = Number($('resampleStep').value)||25;
-    const useSmoothing = $('optSmoothing').checked;
-    const useBridge    = $('optBridge').checked;
-    const {S,Z}=resampleByDistance(coords, stepM);
-    const th = Number($('slopeThreshold').value)||6;
-    const keep = Math.max(th-2, 2);
-    const minLen = Number($('minLen').value)||0;
-    const minGain= Number($('minGain').value)||0;
-    const winMed = Number($('winMed').value)||0;
-    const winAvg = Number($('winAvg').value)||0;
-    const bridgeGap = Number($('bridgeGap').value)||0;
-    const {climbs,gSmooth}=detectClimbsSmooth(S,Z,{useSmoothing,winMed,winAvg,stepM,grade_start:th,grade_keep:keep,min_len:minLen,min_gain:minGain,useBridge,bridgeGap});
+    var stepM = Number($('resampleStep').value)||25;
+    var useSmoothing = $('optSmoothing').checked;
+    var useBridge    = $('optBridge').checked;
+    var rz=resampleByDistance(coords, stepM);
+    var S=rz.S, Z=rz.Z;
+    var th=Number($('slopeThreshold').value)||6;
+    var keep=Math.max(th-2,2);
+    var minLen=Number($('minLen').value)||0;
+    var minGain=Number($('minGain').value)||0;
+    var winMed=Number($('winMed').value)||0;
+    var winAvg=Number($('winAvg').value)||0;
+    var bridgeGap=Number($('bridgeGap').value)||0;
+    var det=detectClimbsSmooth(S,Z,{useSmoothing:useSmoothing,winMed:winMed,winAvg:winAvg,stepM:stepM,grade_start:th,grade_keep:keep,min_len:minLen,min_gain:minGain,useBridge:useBridge,bridgeGap:bridgeGap});
+    var climbs=det.climbs, gSmooth=det.gSmooth;
 
-    const beforeOff=Number($('beforeOffset').value)||0;
-    const afterOff =Number($('afterOffset').value)||0;
+    var beforeOff=Number($('beforeOffset').value)||0;
+    var afterOff =Number($('afterOffset').value)||0;
 
-    for(const c of climbs){
+    for(var ci=0;ci<climbs.length;ci++){
+      var c=climbs[ci];
       if($('optHillEntry').checked){
-        let entry=c.s - beforeOff; entry=Math.max(0,Math.min(total,entry));
+        var entry=Math.max(0, Math.min(total, c.s - beforeOff));
         entry=adjustToFlatterRouteD(S,gSmooth,entry,120);
-        const P=findPointAtRouteD(coords,cum,entry);
-        cands.push({kind:'ENTRY',lat:P.lat,lon:P.lon,routeD:entry,avg:c.avg,gain:c.gain,gmax:c.gmax});
+        var Pe=findPointAtRouteD(coords,cum,entry);
+        cands.push({kind:'ENTRY',lat:Pe.lat,lon:Pe.lon,routeD:entry,avg:c.avg,gain:c.gain,gmax:c.gmax});
       }
       if($('optHillExit').checked){
-        let exit=c.e + afterOff; exit=Math.max(0,Math.min(total,exit));
+        var exit=Math.max(0, Math.min(total, c.e + afterOff));
         exit=adjustToFlatterRouteD(S,gSmooth,exit,120);
-        const P=findPointAtRouteD(coords,cum,exit);
-        cands.push({kind:'EXIT',lat:P.lat,lon:P.lon,routeD:exit,avg:c.avg,gain:c.gain,gmax:c.gmax});
+        var Px=findPointAtRouteD(coords,cum,exit);
+        cands.push({kind:'EXIT',lat:Px.lat,lon:Px.lon,routeD:exit,avg:c.avg,gain:c.gain,gmax:c.gmax});
       }
     }
   }
 
-  // ゴール近傍（500m）除外 & 禁止帯除外
-  const goalLL=pts.at(-1)?L.latLng(pts.at(-1).lat,pts.at(-1).lon):null;
-  let alive=cands.filter(c=>{
-    if(goalLL && goalLL.distanceTo([c.lat,c.lon])<=CLOSE_TO_GOAL_M) return false;
+  // ゴール近傍＆禁止帯
+  var goalPt = pts.length? L.latLng(pts[pts.length-1].lat, pts[pts.length-1].lon) : null;
+  var alive = cands.filter(function(c){
+    if(goalPt && goalPt.distanceTo([c.lat,c.lon])<=CLOSE_TO_GOAL_M) return false;
     if(inExclusion(c.routeD)) return false;
     return true;
   });
 
-  // ---- 2) 最小ルート間隔で選抜（任意）
+  // 最小間隔
   if($('optMinGap').checked) alive=selectByMinGap(alive, minGapRoute, useGreedy);
-  else alive=alive.sort((a,b)=>a.routeD-b.routeD);
+  else alive.sort(function(a,b){return a.routeD-b.routeD;});
 
-  // ---- 3) 上限制約（任意）
+  // 上限
   if($('optMaxCount').checked){
-    const mx = Number($('maxCount').value)||9999;
+    var mx=Number($('maxCount').value)||9999;
     if(alive.length>mx) alive=alive.slice(0,mx);
   }
 
-  // ---- 4) POI スナップ
-  const out=[];
-  const categoryIds=getSelectedCatIds();
-  for(const c of alive){
-    let poi;
+  // POI スナップ
+  var out=[], categoryIds=getSelectedCatIds();
+  for(var ai=0;ai<alive.length;ai++){
+    var c=alive[ai], poi;
     if($('optForwardSnap').checked){
       poi = await nearPoiForwardSnap(c, categoryIds, coords, cum);
     }else{
-      const f = await nearPoi(c.lat, c.lon, categoryIds);
-      poi = {lat:f.geometry.coordinates[1], lon:f.geometry.coordinates[0], name:f.properties.name||'休憩'};
+      var f = await nearPoi(c.lat, c.lon, categoryIds);
+      poi = {lat:f.geometry.coordinates[1], lon:f.geometry.coordinates[0], name:(f.properties&&f.properties.name)?f.properties.name:'休憩'};
     }
-    if(goalLL && goalLL.distanceTo([poi.lat,poi.lon])<=CLOSE_TO_GOAL_M) continue;
-    // 直線距離の近接スキップ
-    if(out.some(r=>distLL(r.lat,r.lon,poi.lat,poi.lon)<MIN_GAP_BETWEEN_RESTS_M)) continue;
+    if(goalPt && goalPt.distanceTo([poi.lat,poi.lon])<=CLOSE_TO_GOAL_M) continue;
+    var tooClose=false;
+    for(var r=0;r<out.length;r++){ if(distLL(out[r].lat,out[r].lon,poi.lat,poi.lon)<MIN_GAP_BETWEEN_RESTS_M){ tooClose=true; break; } }
+    if(tooClose) continue;
     out.push({name:poi.name,lat:poi.lat,lon:poi.lon,type:'via',isRest:true});
   }
-
   return out;
 }
 
@@ -607,48 +671,55 @@ async function drawRoutes(){
 
   if(pts.length<2){alert('2地点以上登録してください');return;}
 
-  Object.values(routeLayers).forEach(l=>l&&map.removeLayer(l)); routeLayers={};
+  Object.keys(routeLayers).forEach(function(k){if(routeLayers[k]) map.removeLayer(routeLayers[k]);}); routeLayers={};
   if(markerLayer) map.removeLayer(markerLayer);
 
   // 以前の休憩を除去
-  pts = pts.filter(p=>!p.isRest);
+  pts = pts.filter(function(p){return !p.isRest;});
   fixType(); drawList();
 
-  const profile=$('profileSelect').value;
-  const mass=Number($('riderWeight').value)+Number($('bikeWeight').value);
-  const flat =Number($('flatKJperKm').value);
-  const basis=$('restBasis').value;
-  const thr  =basis==='time'?Number($('restMinutes').value)*60:Number($('restKJ').value);
+  var profile=$('profileSelect').value;
+  var mass=Number($('riderWeight').value)+Number($('bikeWeight').value);
+  var flat=Number($('flatKJperKm').value);
+  var basis=$('restBasis').value;
+  var thr=basis==='time' ? (Number($('restMinutes').value)*60) : Number($('restKJ').value);
 
   // 休憩プレビュー
   try{
     if($('restToggle').checked){
-      const preview=await dir({coordinates:pts.map(p=>[p.lon,p.lat]),elevation:true,extra_info:['steepness'],preference:'fastest'},profile);
-      const rests=await makeRestAdvanced(preview.features[0],basis,mass,flat,thr,{},getSelectedCatIds());
-      if(rests.length){
-        const insertPos=Math.max(pts.length-1,1);
-        pts.splice(insertPos,0,...rests);
-        fixType(); drawList();
+      var preview=await dir({coordinates:pts.map(function(p){return [p.lon,p.lat];}),elevation:true,extra_info:['steepness'],preference:'fastest'},profile);
+      var feat=safe(function(){return preview.features[0];},null);
+      if(feat){
+        var rests=await makeRestAdvanced(feat,basis,mass,flat,thr,{},getSelectedCatIds());
+        if(rests.length){
+          var insertPos=Math.max(pts.length-1,1);
+          Array.prototype.splice.apply(pts,[insertPos,0].concat(rests));
+          fixType(); drawList();
+        }
       }
     }
   }catch(e){console.warn('休憩地点取得失敗',e);}
 
   // マーカー
   markerLayer=L.layerGroup().addTo(map);
-  pts.forEach(p=>{
-    const ic=p.type==='start'?ICONS.start:p.type==='goal'?ICONS.goal:ICONS.via;
+  pts.forEach(function(p){
+    var ic=p.type==='start'?ICONS.start:(p.type==='goal'?ICONS.goal:ICONS.via);
     markerLayer.addLayer(L.marker([p.lat,p.lon],{icon:ic}).bindTooltip(p.name+(p.isRest?'（休憩）':'')));
   });
 
   // ルート描画
-  const coords=pts.map(p=>[p.lon,p.lat]), base={coordinates:coords,elevation:true,extra_info:['steepness']};
+  var coords=pts.map(function(p){return [p.lon,p.lat];});
+  var base={coordinates:coords,elevation:true,extra_info:['steepness']};
   try{
-    const shortest = await dir({...base,preference:'shortest'},profile);
-    const fastest  = await dir({...base,preference:'fastest'},profile);
-    let slope=shortest.features[0];
+    var shortest = await dir(Object.assign({},base,{preference:'shortest'}),profile);
+    var fastest  = await dir(Object.assign({},base,{preference:'fastest'}),profile);
+    var slope = shortest.features[0];
     if(coords.length===2){
-      const alt=await dir({...base,preference:'shortest',alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.4}},profile);
-      slope=alt.features.reduce((a,b)=>steepSum(a)<steepSum(b)?a:b);
+      var alt=await dir(Object.assign({},base,{preference:'shortest',alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.4}}),profile);
+      var feats=alt.features||[];
+      if(feats.length){
+        slope=feats.reduce(function(a,b){return steepSum(a)<steepSum(b)?a:b;});
+      }
     }
 
     routeLayers.short=L.geoJSON(shortest.features[0],{pane:'routeShortest',style:{color:'#ff0000',weight:6}}).addTo(map);
@@ -656,24 +727,29 @@ async function drawRoutes(){
     routeLayers.slope=L.geoJSON(slope               ,{pane:'routeSlope' , style:{color:'#ff9900',weight:6,opacity:0.9}}).addTo(map);
     updateLayerVisibility();
 
-    const bounds=new L.LatLngBounds();
-    markerLayer.eachLayer(l=>bounds.extend(l.getLatLng()));
-    Object.values(routeLayers).forEach(l=>bounds.extend(l.getBounds()));
+    var bounds=new L.LatLngBounds();
+    markerLayer.eachLayer(function(l){bounds.extend(l.getLatLng());});
+    Object.keys(routeLayers).forEach(function(k){bounds.extend(routeLayers[k].getBounds());});
     if(bounds.isValid()) map.fitBounds(bounds.pad(0.1));
 
-    const s1=shortest.features[0].properties.summary,s2=fastest.features[0].properties.summary,s3=slope.properties.summary;
+    var s1=shortest.features[0].properties.summary, s2=fastest.features[0].properties.summary, s3=slope.properties.summary;
     $('routeInfo').innerHTML=
-      `<b>最短</b> ${formatDist(s1.distance)} / ${formatDur(s1.duration)}<br>`+
-      `<b>最速</b> ${formatDist(s2.distance)} / ${formatDur(s2.duration)}<br>`+
-      `<b>勾配</b> ${formatDist(s3.distance)} / ${formatDur(s3.duration)}`;
-    $('distanceScore').textContent=`距離差: ${(s2.distance-s1.distance).toFixed(0)} m`;
+      '<b>最短</b> '+formatDist(s1.distance)+' / '+formatDur(s1.duration)+'<br>'+
+      '<b>最速</b> '+formatDist(s2.distance)+' / '+formatDur(s2.duration)+'<br>'+
+      '<b>勾配</b> '+formatDist(s3.distance)+' / '+formatDur(s3.duration);
+    $('distanceScore').textContent='距離差: '+(s2.distance-s1.distance).toFixed(0)+' m';
 
     lastFastest=fastest.features[0]; lastMass=mass; lastFlat=flat;
     $('btnDownloadTime').disabled=false;
     $('btnDownloadDist').disabled=false;
   }catch(e){console.error(e);alert('ルート取得失敗: '+e.message);}
 }
-function updateLayerVisibility(){const m={short:'chkShortest',fast:'chkFastest',slope:'chkSlope'};for(const k in routeLayers){routeLayers[k]&&($(m[k]).checked?routeLayers[k].addTo(map):map.removeLayer(routeLayers[k]));}}
+function updateLayerVisibility(){
+  var m={short:'chkShortest',fast:'chkFastest',slope:'chkSlope'};
+  Object.keys(routeLayers).forEach(function(k){
+    if($(m[k]).checked) routeLayers[k].addTo(map); else map.removeLayer(routeLayers[k]);
+  });
+}
 </script>
 </body>
 </html>
