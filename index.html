@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>自転車ルート比較＋休憩（候補3×各モード提案＆選択） v6.1</title>
+<title>自転車ルート比較＋休憩（候補3×各モード提案＆選択・カテゴリ切替） v6.3</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
@@ -11,7 +11,7 @@
 <style>
 body{margin:0;font-family:system-ui,sans-serif}
 #map{height:520px;width:100%}
-#controls{display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:#f7f7f7}
+#controls{display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:#f7f7f7;position:relative}
 #pointList{list-style:none;margin:0;padding:8px}
 #pointList li{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;padding:4px 8px;border:1px solid #ccc;background:#fafafa;margin-bottom:4px;cursor:move}
 button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0 6px;font-size:12px}
@@ -23,13 +23,27 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 .kcard h4{margin:0 0 6px 0;font-size:1rem}
 .kcard .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:10px}
+#searchBoxWrap{position:relative}
+#srch{width:280px}
+#searchResults{position:absolute;left:0;top:36px;width:100%;max-height:260px;overflow:auto;list-style:none;margin:4px 0 0;padding:0;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.08);z-index:1000}
+#searchResults li{padding:8px 10px;cursor:pointer;border-bottom:1px solid #eee}
+#searchResults li:last-child{border-bottom:none}
+#searchResults li:hover{background:#f0f4ff}
+.unit{opacity:.7;margin-left:4px}
+.input-compact input{width:90px}
+.chips{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+hr.sep{border:none;border-top:1px solid #eee;margin:8px 0}
+.tag{display:inline-block;font-size:.77em;padding:2px 6px;border-radius:999px;background:#f6f6ff;border:1px solid #dde}
 </style>
 </head>
 <body>
 
 <div id="controls">
-  <input id="placeInput" placeholder="地名・住所" style="width:260px">
-  <button id="addBtn">追加</button>
+  <div id="searchBoxWrap">
+    <input id="srch" placeholder="地名・住所で検索">
+    <ul id="searchResults" hidden></ul>
+  </div>
+  <button id="btnAdd">追加</button>
   <button id="locBtn">現在地</button>
   <button id="drawBtn">ルート表示</button>
   <label class="chk"><input type="checkbox" id="showShortest" checked>最短</label>
@@ -42,12 +56,39 @@ label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:10px}
 <div class="section">
   <details open>
     <summary>休憩候補の組合せ（<span class="badge">各モード上位3</span>）を計算＆適用</summary>
-    <div class="small">※表示ルートは「最短」「最速」のみ。各休憩トリガー周辺のPOIから近い順に最大3件を候補化し、平均/分散ベースのコストで上位3組合せを提示します。</div>
+
+    <div class="chips" style="margin-top:6px">
+      <span class="small">候補カテゴリ：</span>
+      <label class="chk"><input type="checkbox" id="catConv" checked> コンビニ</label>
+      <label class="chk"><input type="checkbox" id="catSuper" checked> スーパー</label>
+      <label class="chk"><input type="checkbox" id="catDrug"  checked> ドラッグストア</label>
+      <label class="chk">半径 <input id="poiRadius" type="number" value="300" step="50" min="50" style="width:80px"> m</label>
+    </div>
+
+    <hr class="sep">
+
+    <div class="small" style="margin:6px 0 10px">
+      評価は <b>距離 / 時間 / エネルギー</b> のうち <b>1つ</b>を選び、その <b>平均</b> と <b>分散</b> への近さ（2乗誤差）で最適化します。
+    </div>
+    <div class="small input-compact" style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:8px">
+      <label>評価対象
+        <select id="evalMetric">
+          <option value="distance" selected>距離</option>
+          <option value="time">時間</option>
+          <option value="energy">エネルギー</option>
+        </select>
+      </label>
+      <label>目標 平均 <input id="targetMean" type="number" value="20" step="0.1"><span id="unitMean" class="unit">km</span></label>
+      <label>目標 分散 <input id="targetVar" type="number" value="9" step="0.1"><span id="unitVar" class="unit">km²</span></label>
+      <label>ビーム幅 <input id="beamWidth" type="number" value="30" step="1" min="3"></label>
+    </div>
+
     <div style="margin:8px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button id="btnCollectCands">休憩候補を収集</button>
       <button id="btnSolveBoth" disabled>最短/最速の候補を計算</button>
       <span id="optStatus" class="small"></span>
     </div>
+
     <div class="klist">
       <div class="kcard" id="cardShortest">
         <h4>最短モードの上位3組合せ</h4>
@@ -63,23 +104,24 @@ label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:10px}
 
 <script>
 /* ====== 設定 ====== */
-const ORS_KEY='5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; // ←★あなたの ORS API キーを入れてください
+const ORS_KEY='5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; // ←★あなたの ORS API キー
 const ORS_ROOT='https://api.openrouteservice.org';
 
 /* ====== ヘルパ ====== */
-function $(id){return document.getElementById(id);} 
+function $(id){return document.getElementById(id);}
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 function icon(c){return new L.Icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/'+c+'-dot.png',iconSize:[32,32],iconAnchor:[16,32]});}
 const ICONS={start:icon('green'),via:icon('blue'),goal:icon('red')};
-function safe(path,fb){try{const v=path();return (v===undefined||v===null)?fb:v;}catch(e){return fb;}}
 function mean(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:0;}
 function variance(a){if(!a.length) return 0; const m=mean(a); return a.reduce((s,x)=>s+(x-m)*(x-m),0)/a.length;}
+function debounce(fn,ms){let t;return (...args)=>{clearTimeout(t);t=setTimeout(()=>fn(...args),ms);}}
 
 /* ====== 状態 ====== */
 let map, markerLayer, routeLayers={};
 let pts=[]; // {name,lat,lon,type:start/via/goal, isRest?, restCandidates?[]}
 let lastDirTs=0;
 const pairCache=new Map();
+let _lastSearchResults=[];
 
 /* ====== 初期化 ====== */
 window.addEventListener('DOMContentLoaded',()=>{
@@ -88,36 +130,83 @@ window.addEventListener('DOMContentLoaded',()=>{
   map.createPane('routeShortest').style.zIndex=700;
   map.createPane('routeFastest').style.zIndex=710;
 
-  $('addBtn').onclick=addBySearch;
+  // 検索候補
+  $('srch').addEventListener('input', debounce(onSearchInput, 280));
+  $('srch').addEventListener('keydown', onSearchKeyDown);
+  document.addEventListener('click', (e)=>{ if(!$('searchBoxWrap').contains(e.target)) hideSearchResults(); });
+
+  $('btnAdd').onclick=addSelectedOrFirst;
   $('locBtn').onclick=addCurrent;
   $('drawBtn').onclick=drawRoutes;
 
   $('btnCollectCands').onclick=async()=>{
     $('optStatus').textContent='休憩トリガ生成＆候補収集中...';
-    await ensureRests();             // 休憩トリガ生成（kJしきい値）
-    await buildRestCandidatesForAll(); // 各休憩の近い順3件
+    await ensureRests();               // 休憩トリガ（kJ固定）を自動生成
+    await buildRestCandidatesForAll(); // 各休憩の近い順3件（カテゴリ反映）
     $('optStatus').textContent='候補OK。計算できます。';
     $('btnSolveBoth').disabled=false;
   };
   $('btnSolveBoth').onclick=solveBothModes;
 
+  $('evalMetric').addEventListener('change', syncMetricUnits);
+  syncMetricUnits();
+
   initList();
 
-  // デモ用：2点だけ置いておく
+  // デモ用：2点
   pts=[{name:'出発',lat:34.07,lon:134.55,type:'start'},{name:'到着',lat:34.15,lon:134.60,type:'goal'}];
   drawList();
 });
 
-/* ====== UI: 地点追加 ====== */
-async function addBySearch(){
-  const q=$('placeInput').value.trim(); if(!q) return;
-  const url='https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q);
-  const arr=await (await fetch(url)).json();
-  if(!arr.length) return alert('見つかりませんでした');
-  const o=arr[0];
-  addPoint({name:o.display_name,lat:+o.lat,lon:+o.lon});
-  $('placeInput').value='';
+/* ====== 検索候補 UI ====== */
+function renderSearchResults(items){
+  const ul=$('searchResults');
+  ul.innerHTML='';
+  if(!items.length){ ul.hidden=true; return; }
+  items.forEach((o,idx)=>{
+    const li=document.createElement('li');
+    li.textContent=o.display_name;
+    li.dataset.idx=idx;
+    li.onclick=()=>{ selectSearchItem(idx); };
+    ul.appendChild(li);
+  });
+  ul.hidden=false;
 }
+function hideSearchResults(){ $('searchResults').hidden=true; }
+async function onSearchInput(){
+  const q=$('srch').value.trim();
+  if(!q){ hideSearchResults(); _lastSearchResults=[]; return; }
+  const url='https://nominatim.openstreetmap.org/search?format=json&limit=10&q='+encodeURIComponent(q);
+  try{
+    const arr=await (await fetch(url)).json();
+    _lastSearchResults=arr||[];
+    renderSearchResults(_lastSearchResults);
+  }catch(e){
+    _lastSearchResults=[];
+    hideSearchResults();
+  }
+}
+function onSearchKeyDown(e){
+  if(e.key==='Enter'){
+    e.preventDefault();
+    addSelectedOrFirst();
+  }else if(e.key==='Escape'){
+    hideSearchResults();
+  }
+}
+function selectSearchItem(idx){
+  const o=_lastSearchResults[idx];
+  if(!o) return;
+  addPoint({name:o.display_name,lat:+o.lat,lon:+o.lon});
+  $('srch').value='';
+  hideSearchResults();
+}
+function addSelectedOrFirst(){
+  if(!_lastSearchResults.length){ return; }
+  selectSearchItem(0);
+}
+
+/* ====== UI: 地点操作 ====== */
 function addCurrent(){navigator.geolocation.getCurrentPosition(p=>addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude}),()=>alert('現在地取得失敗'));}
 function addPoint(p){p.type=pts.length?'via':'start'; pts.forEach(d=>{if(d.type==='goal') d.type='via';}); pts.push(p); if(pts.length>1) pts[pts.length-1].type='goal'; drawList();}
 function fixType(){ if(pts[0]) pts[0].type='start'; if(pts.length>1) pts[pts.length-1].type='goal'; }
@@ -130,12 +219,14 @@ function drawList(){
     const del=document.createElement('button'); del.className='del'; del.textContent='×';
     del.onclick=(e)=>{e.stopPropagation(); pts.splice(i,1); fixType(); drawList();}; li.appendChild(del);
 
-    // 休憩候補表示（あれば）
     if(p.isRest && Array.isArray(p.restCandidates) && p.restCandidates.length){
-      const det=document.createElement('details');
-      const sum=document.createElement('summary'); sum.textContent=`候補（${p.restCandidates.length}件）`; det.appendChild(sum);
+      const det=document.createElement('details'); const sum=document.createElement('summary'); sum.textContent=`候補（${p.restCandidates.length}件）`; det.appendChild(sum);
       const ul2=document.createElement('ul'); ul2.style.margin='6px 0 0 16px';
-      p.restCandidates.forEach((c,idx)=>{ const li2=document.createElement('li'); li2.textContent=`#${idx+1} ${c.name||'POI'} / ${(c._d||0).toFixed(0)}m`; ul2.appendChild(li2);});
+      p.restCandidates.forEach((c,idx)=>{ 
+        const li2=document.createElement('li'); 
+        li2.innerHTML=`#${idx+1} ${c.name||'POI'} / ${(c._d||0).toFixed(0)}m <span class="tag">${labelForCat(c.cat)}</span>`;
+        ul2.appendChild(li2);
+      });
       det.appendChild(ul2); li.appendChild(det);
     }
     ul.appendChild(li);
@@ -170,7 +261,7 @@ function buildCumDistArray(coords){
 }
 async function makeRestSimple(previewFeature,mass,flat,thrKJ){
   const coords=previewFeature.geometry.coordinates;
-  const segs=safe(()=>previewFeature.properties.segments,[])||[];
+  const segs=(previewFeature.properties.segments||[]);
   const hasEle=(coords[0].length>=3);
   const cum=buildCumDistArray(coords);
   let acc=0; const out=[];
@@ -205,29 +296,57 @@ async function ensureRests(){
   }
 }
 
-/* ====== Overpass: 休憩候補3件抽出 ====== */
-async function fetchPoisAround(lat,lon,radiusM){
-  const q=`[out:json][timeout:25];(
-    node["amenity"="convenience"](around:${radiusM},${lat},${lon});
-    node["shop"="supermarket"](around:${radiusM},${lat},${lon});
-    node["shop"="chemist"](around:${radiusM},${lat},${lon});
-    node["shop"="pharmacy"](around:${radiusM},${lat},${lon});
-  );out center 30;`;
-  const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:`data=${encodeURIComponent(q)}`,headers:{'Content-Type':'application/x-www-form-urlencoded'}});
+/* ====== POIカテゴリ切替（Overpass） ====== */
+function labelForCat(cat){ return cat==='conv'?'コンビニ':cat==='super'?'スーパー':'ドラッグストア'; }
+function selectedCategories(){
+  const arr=[];
+  if($('catConv').checked)  arr.push('conv');
+  if($('catSuper').checked) arr.push('super');
+  if($('catDrug').checked)  arr.push('drug');
+  return arr;
+}
+function buildOverpassBlock(cat, lat, lon, radiusM){
+  const A = `around:${radiusM},${lat},${lon}`;
+  if(cat==='conv'){
+    return `node["amenity"="convenience"](${A});`;
+  }else if(cat==='super'){
+    return `node["shop"="supermarket"](${A});`;
+  }else{ // drug
+    return `node["shop"="chemist"](${A});node["shop"="pharmacy"](${A});`;
+  }
+}
+async function fetchPoisAroundCats(lat,lon,radiusM,cats){
+  if(!cats.length) return [];
+  const blocks = cats.map(c => buildOverpassBlock(c,lat,lon,radiusM)).join('\n');
+  const q = `[out:json][timeout:25];(${blocks});out center 60;`;
+  const r=await fetch('https://overpass-api.de/api/interpreter',{
+    method:'POST',
+    body:`data=${encodeURIComponent(q)}`,
+    headers:{'Content-Type':'application/x-www-form-urlencoded'}
+  });
   const data=await r.json();
-  return (data.elements||[]).map(e=>({
-    lat:e.lat||e.center.lat,
-    lon:e.lon||e.center.lon,
-    name:(e.tags&&(e.tags['name:ja']||e.tags.name))||e.tags?.brand||'POI'
-  }));
+  const els=(data.elements||[]);
+  return els.map(e=>{
+    const lat2=e.lat||e.center?.lat, lon2=e.lon||e.center?.lon;
+    const tags=e.tags||{};
+    const name=tags['name:ja']||tags.name||tags.brand||'POI';
+    // カテゴリ推定（どの条件でヒットしたかは戻らないのでタグで再推定）
+    let cat='conv';
+    if(tags.shop==='supermarket') cat='super';
+    else if(tags.shop==='chemist' || tags.shop==='pharmacy') cat='drug';
+    else if(tags.amenity==='convenience') cat='conv';
+    return {lat:lat2, lon:lon2, name, cat};
+  });
 }
 async function buildRestCandidatesForAll(){
   const rests=pts.filter(p=>p.isRest);
+  const cats=selectedCategories();
+  const radius=Math.max(10, +$('poiRadius').value || 300);
   for(let i=0;i<rests.length;i++){
     const p=rests[i];
     try{
       if(i>0) await sleep(250);
-      const pois=await fetchPoisAround(p.lat,p.lon,300);
+      const pois=await fetchPoisAroundCats(p.lat,p.lon,radius,cats);
       pois.forEach(po=>po._d=L.latLng(p.lat,p.lon).distanceTo([po.lat,po.lon]));
       p.restCandidates=pois.sort((a,b)=>a._d-b._d).slice(0,3);
     }catch(e){
@@ -258,6 +377,33 @@ async function getPairMetrics(a,b,preference,profile='cycling-road',mass=75,flat
   return val;
 }
 
+/* ====== 評価（距離／時間／エネルギーの平均・分散） ====== */
+function getEvalConfig(){
+  const metric=$('evalMetric').value;      // 'distance' | 'time' | 'energy'
+  const meanT=+$('targetMean').value || 0;
+  const varT=+$('targetVar').value  || 0;
+  const beam=Math.max(3, +$('beamWidth').value || 30);
+  return {metric, meanT, varT, beam};
+}
+function syncMetricUnits(){
+  const m=$('evalMetric').value;
+  const uM=(m==='distance'?'km': m==='time'?'分':'kJ');
+  const uV=(m==='distance'?'km²': m==='time'?'分²':'kJ²');
+  $('unitMean').textContent=uM;
+  $('unitVar').textContent=uV;
+  if(m==='distance'){ $('targetMean').value=20; $('targetVar').value=9; }
+  if(m==='time'){ $('targetMean').value=60; $('targetVar').value=400; }
+  if(m==='energy'){ $('targetMean').value=500; $('targetVar').value=100; }
+}
+function evalCostFromSeries(series, cfg){
+  let xs;
+  if(cfg.metric==='distance') xs = series.map(s=>s.km);
+  else if(cfg.metric==='time') xs = series.map(s=>s.min);
+  else xs = series.map(s=>s.kJ);
+  const mm = mean(xs), vv = variance(xs);
+  return (mm-cfg.meanT)**2 + (vv-cfg.varT)**2;
+}
+
 /* ====== 組合せ探索（ビーム）＆上位3件抽出 ====== */
 function buildGroupsFromPts(){
   const start=pts.find(p=>p.type==='start');
@@ -266,23 +412,12 @@ function buildGroupsFromPts(){
     if(Array.isArray(p.restCandidates)&&p.restCandidates.length){
       return p.restCandidates.map(c=>({name:c.name||'候補',lat:c.lat,lon:c.lon}));
     }
-    // 候補が無い場合は元のトリガー点をそのまま1候補として扱う
     return [{name:p.name,lat:p.lat,lon:p.lon}];
   });
   return [[{name:start.name,lat:start.lat,lon:start.lon}], ...restGroups, [{name:goal.name,lat:goal.lat,lon:goal.lon}]];
 }
 
-// シンプルな目標（必要なら調整してください）
-const TARGET={meanD:20,varD:9,meanT:60,varT:400,meanE:500,varE:100};
-
-function evalCostFromSeries(series){
-  const ds=series.map(s=>s.km), ts=series.map(s=>s.min), es=series.map(s=>s.kJ);
-  return (mean(ds)-TARGET.meanD)**2 + (variance(ds)-TARGET.varD)**2
-       + (mean(ts)-TARGET.meanT)**2 + (variance(ts)-TARGET.varT)**2
-       + (mean(es)-TARGET.meanE)**2 + (variance(es)-TARGET.varE)**2;
-}
-
-async function topKCombinations(preference, K=3, beamWidth=30){
+async function topKCombinations(preference, K=3, cfg={metric:'distance', meanT:20, varT:9, beam:30}){
   const groups=buildGroupsFromPts();
   if(groups.length<2) return [];
 
@@ -294,12 +429,12 @@ async function topKCombinations(preference, K=3, beamWidth=30){
       for(const cand of next){
         const met=await getPairMetrics(st.node,cand,preference);
         const legs=st.legs.concat([met]);
-        const cost=evalCostFromSeries(legs);
+        const cost=evalCostFromSeries(legs, cfg);
         nb.push({node:cand, path:st.path.concat([cand]), legs, cost});
       }
     }
     nb.sort((a,b)=>a.cost-b.cost);
-    beam=nb.slice(0,beamWidth);
+    beam=nb.slice(0,cfg.beam);
   }
   return [...beam].sort((a,b)=>a.cost-b.cost).slice(0,K);
 }
@@ -367,9 +502,10 @@ async function drawRoutes(){
 /* ====== 両モードで上位3を計算 → 表示 ====== */
 async function solveBothModes(){
   $('optStatus').textContent='計算中...';
+  const cfg=getEvalConfig();
   const [shortTop, fastTop] = await Promise.all([
-    topKCombinations('shortest',3,30),
-    topKCombinations('fastest',3,30)
+    topKCombinations('shortest',3,cfg),
+    topKCombinations('fastest',3,cfg)
   ]);
   renderTopK($('listShortest'), shortTop);
   renderTopK($('listFastest'), fastTop);
