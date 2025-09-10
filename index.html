@@ -3,11 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>自転車ルート比較＋休憩（候補3×各モード提案＆選択・カテゴリ切替） v6.3</title>
+<title>自転車ルート比較＋休憩（距離非依存の候補N件→上位3組合せ） v6.4</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
-
 <style>
 body{margin:0;font-family:system-ui,sans-serif}
 #map{height:520px;width:100%}
@@ -55,7 +54,7 @@ hr.sep{border:none;border-top:1px solid #eee;margin:8px 0}
 
 <div class="section">
   <details open>
-    <summary>休憩候補の組合せ（<span class="badge">各モード上位3</span>）を計算＆適用</summary>
+    <summary>休憩候補（距離非依存で N 件）→ 組合せの上位3を提案・適用</summary>
 
     <div class="chips" style="margin-top:6px">
       <span class="small">候補カテゴリ：</span>
@@ -63,6 +62,7 @@ hr.sep{border:none;border-top:1px solid #eee;margin:8px 0}
       <label class="chk"><input type="checkbox" id="catSuper" checked> スーパー</label>
       <label class="chk"><input type="checkbox" id="catDrug"  checked> ドラッグストア</label>
       <label class="chk">半径 <input id="poiRadius" type="number" value="300" step="50" min="50" style="width:80px"> m</label>
+      <label class="chk">候補数 <input id="candCount" type="number" value="3" step="1" min="1" style="width:80px"></label>
     </div>
 
     <hr class="sep">
@@ -106,6 +106,7 @@ hr.sep{border:none;border-top:1px solid #eee;margin:8px 0}
 /* ====== 設定 ====== */
 const ORS_KEY='5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; // ←★あなたの ORS API キー
 const ORS_ROOT='https://api.openrouteservice.org';
+const SHUFFLE_CANDS = true; // 距離非依存を強調：取得後に軽くシャッフル（false なら取得順のまま）
 
 /* ====== ヘルパ ====== */
 function $(id){return document.getElementById(id);}
@@ -115,6 +116,7 @@ const ICONS={start:icon('green'),via:icon('blue'),goal:icon('red')};
 function mean(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:0;}
 function variance(a){if(!a.length) return 0; const m=mean(a); return a.reduce((s,x)=>s+(x-m)*(x-m),0)/a.length;}
 function debounce(fn,ms){let t;return (...args)=>{clearTimeout(t);t=setTimeout(()=>fn(...args),ms);}}
+function shuffleInPlace(arr){for(let i=arr.length-1;i>0;i--){const j=(Math.random()*(i+1))|0;[arr[i],arr[j]]=[arr[j],arr[i]];}}
 
 /* ====== 状態 ====== */
 let map, markerLayer, routeLayers={};
@@ -142,7 +144,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   $('btnCollectCands').onclick=async()=>{
     $('optStatus').textContent='休憩トリガ生成＆候補収集中...';
     await ensureRests();               // 休憩トリガ（kJ固定）を自動生成
-    await buildRestCandidatesForAll(); // 各休憩の近い順3件（カテゴリ反映）
+    await buildRestCandidatesForAll(); // 各休憩の候補（距離非依存でN件）
     $('optStatus').textContent='候補OK。計算できます。';
     $('btnSolveBoth').disabled=false;
   };
@@ -224,7 +226,7 @@ function drawList(){
       const ul2=document.createElement('ul'); ul2.style.margin='6px 0 0 16px';
       p.restCandidates.forEach((c,idx)=>{ 
         const li2=document.createElement('li'); 
-        li2.innerHTML=`#${idx+1} ${c.name||'POI'} / ${(c._d||0).toFixed(0)}m <span class="tag">${labelForCat(c.cat)}</span>`;
+        li2.innerHTML=`#${idx+1} ${c.name||'POI'} <span class="tag">${labelForCat(c.cat)}</span>`;
         ul2.appendChild(li2);
       });
       det.appendChild(ul2); li.appendChild(det);
@@ -296,7 +298,7 @@ async function ensureRests(){
   }
 }
 
-/* ====== POIカテゴリ切替（Overpass） ====== */
+/* ====== POIカテゴリ（距離非依存で N 件） ====== */
 function labelForCat(cat){ return cat==='conv'?'コンビニ':cat==='super'?'スーパー':'ドラッグストア'; }
 function selectedCategories(){
   const arr=[];
@@ -305,20 +307,16 @@ function selectedCategories(){
   if($('catDrug').checked)  arr.push('drug');
   return arr;
 }
-function buildOverpassBlock(cat, lat, lon, radiusM){
+function blockFor(cat, lat, lon, radiusM){
   const A = `around:${radiusM},${lat},${lon}`;
-  if(cat==='conv'){
-    return `node["amenity"="convenience"](${A});`;
-  }else if(cat==='super'){
-    return `node["shop"="supermarket"](${A});`;
-  }else{ // drug
-    return `node["shop"="chemist"](${A});node["shop"="pharmacy"](${A});`;
-  }
+  if(cat==='conv') return `node["amenity"="convenience"](${A});`;
+  if(cat==='super')return `node["shop"="supermarket"](${A});`;
+  return `node["shop"="chemist"](${A});node["shop"="pharmacy"](${A});`; // drug
 }
-async function fetchPoisAroundCats(lat,lon,radiusM,cats){
+async function fetchPoisAroundCats(lat,lon,radiusM,cats,limit=60){
   if(!cats.length) return [];
-  const blocks = cats.map(c => buildOverpassBlock(c,lat,lon,radiusM)).join('\n');
-  const q = `[out:json][timeout:25];(${blocks});out center 60;`;
+  const blocks = cats.map(c => blockFor(c,lat,lon,radiusM)).join('\n');
+  const q = `[out:json][timeout:25];(${blocks});out center ${limit};`;
   const r=await fetch('https://overpass-api.de/api/interpreter',{
     method:'POST',
     body:`data=${encodeURIComponent(q)}`,
@@ -330,7 +328,6 @@ async function fetchPoisAroundCats(lat,lon,radiusM,cats){
     const lat2=e.lat||e.center?.lat, lon2=e.lon||e.center?.lon;
     const tags=e.tags||{};
     const name=tags['name:ja']||tags.name||tags.brand||'POI';
-    // カテゴリ推定（どの条件でヒットしたかは戻らないのでタグで再推定）
     let cat='conv';
     if(tags.shop==='supermarket') cat='super';
     else if(tags.shop==='chemist' || tags.shop==='pharmacy') cat='drug';
@@ -342,13 +339,16 @@ async function buildRestCandidatesForAll(){
   const rests=pts.filter(p=>p.isRest);
   const cats=selectedCategories();
   const radius=Math.max(10, +$('poiRadius').value || 300);
+  const N = Math.max(1, +$('candCount').value || 3);
+
   for(let i=0;i<rests.length;i++){
     const p=rests[i];
     try{
       if(i>0) await sleep(250);
-      const pois=await fetchPoisAroundCats(p.lat,p.lon,radius,cats);
-      pois.forEach(po=>po._d=L.latLng(p.lat,p.lon).distanceTo([po.lat,po.lon]));
-      p.restCandidates=pois.sort((a,b)=>a._d-b._d).slice(0,3);
+      let pois=await fetchPoisAroundCats(p.lat,p.lon,radius,cats,Math.max(60,N*3));
+      // 距離非依存: 並べ替えない（オプションでシャッフル）
+      if(SHUFFLE_CANDS) shuffleInPlace(pois);
+      p.restCandidates = pois.slice(0, N);
     }catch(e){
       console.warn('候補収集失敗',e);
       p.restCandidates=[];
