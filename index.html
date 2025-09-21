@@ -42,6 +42,46 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </label>
 </div>
 
+<!-- ★休憩設定パネル -->
+<div class="section">
+  <details open>
+    <summary>休憩設定</summary>
+    <div style="display:flex;flex-wrap:wrap;gap:10px">
+      <label>基準
+        <select id="restBasis">
+          <option value="time">時間</option>
+          <option value="energy" selected>kJ</option>
+        </select>
+      </label>
+      <label>時間間隔 <input id="restMinutes" type="number" value="60" min="15" step="5"> 分</label>
+      <label>kJしきい値 <input id="restKJ" type="number" value="500" min="100" step="50"> kJ</label>
+    </div>
+
+    <div style="margin-top:6px">
+      <label><input type="checkbox" id="optAccum" checked> 積算トリガ</label><br>
+      <label><input type="checkbox" id="optStatTrigger"> 統計トリガ</label>
+      平均 <input id="statMean" type="number" value="20" step="1">km
+      分散 <input id="statVar" type="number" value="9" step="0.5">km²<br>
+      <label><input type="checkbox" id="optPercentTrigger"> 割合トリガ</label>
+      %ごと <input id="percentStep" type="number" value="25" step="1"> %
+      <select id="percentMetric">
+        <option value="distance">距離</option>
+        <option value="energy">エネルギー</option>
+        <option value="time">時間</option>
+      </select>
+    </div>
+  </details>
+</div>
+
+<!-- ★休憩ログ表示 -->
+<div class="section">
+  <details open>
+    <summary>休憩トリガ・ヒット状況</summary>
+    <div id="restDebug" style="white-space:pre-wrap;font-size:0.9em"></div>
+  </details>
+</div>
+
+
 <!-- 地点リストと地図 -->
 <ul id="pointList"></ul>
 <div id="map"></div>
@@ -217,6 +257,25 @@ async function drawRoutes(){
       `<b>勾配</b> ${formatDist(s3.distance)} / ${formatDur(s3.duration)}`;
     $('distanceScore').textContent = '距離差（最速-最短）: '+(s2.distance - s1.distance).toFixed(0)+' m';
 
+        // ★休憩地点挿入
+    const mass = 75; // 体重+バイク質量(例)
+    const flat = 18; // 平坦係数
+    const rests = await makeRestPoints(routeData.fastest, mass, flat);
+    if(rests.length){
+      rests.forEach(r=>{
+        pts.splice(pts.length-1,0,{name:'休憩',lat:r.lat,lon:r.lon,type:'via',isRest:true});
+      });
+      drawList();
+      // 休憩マーカー追加
+      rests.forEach(r=>{
+        L.marker([r.lat,r.lon],{
+          icon:new L.Icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/purple-dot.png',
+                           iconSize:[32,32],iconAnchor:[16,32]})
+        }).bindTooltip('休憩').addTo(markerLayer);
+      });
+    }
+
+    
     // デフォルト表示は最速
     showSingleRoute('fastest', true);
     setActiveButton($('btnShowFastest'));
@@ -225,6 +284,116 @@ async function drawRoutes(){
     alert('ルート取得失敗: '+e.message);
   }
 }
+
+// === 休憩トリガー関連 ===
+function logRest(msg){ 
+  $('restDebug').textContent += msg + "\n";
+}
+
+function energyStepKJ(dist,dz,mass,flat=18){
+  return flat*(dist/1000)+Math.max(dz,0)*mass*9.80665/1000;
+}
+
+async function totalEnergyKJ(feature,mass,flat){
+  const coords = feature.geometry.coordinates;
+  const segs   = feature.properties.segments||[];
+  let tot=0;
+  for(const s of segs){
+    for(const st of s.steps||[]){
+      const [i0,i1]=st.way_points||[0,0];
+      const d=st.distance||0;
+      const dz = coords[i1].length>=3 ? (coords[i1][2]-coords[i0][2]) : 0;
+      tot += energyStepKJ(d,dz,mass,flat);
+    }
+  }
+  return tot;
+}
+
+async function makeRestPoints(feature,mass,flat){
+  const coords=feature.geometry.coordinates;
+  const segs=(feature.properties.segments||[]);
+  const hasEle = coords[0].length>=3;
+  const cumDist=[0];
+  for(let i=1;i<coords.length;i++){
+    cumDist[i]=cumDist[i-1]+L.latLng(coords[i][1],coords[i][0]).distanceTo([coords[i-1][1],coords[i-1][0]]);
+  }
+
+  const basis=$('restBasis').value;
+  const thr=basis==='time' ? Number($('restMinutes').value)*60 : Number($('restKJ').value);
+  let raw=[];
+
+  // 積算トリガ
+  if($('optAccum').checked){
+    let acc=0;
+    for(const s of segs){
+      for(const st of s.steps||[]){
+        const [i0,i1]=st.way_points||[0,0];
+        const d=st.distance||0, t=st.duration||0;
+        const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
+        const dE = energyStepKJ(d,dz,mass,flat);
+        acc += (basis==='time') ? t : dE;
+        if(acc >= thr){
+          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+          logRest(`[ACCUM] ${ (cumDist[i1]/1000).toFixed(2) } km → HIT`);
+          acc=0;
+        }
+      }
+    }
+  }
+
+  // 統計トリガ
+  if($('optStatTrigger').checked){
+    const mean=Number($('statMean').value), vari=Number($('statVar').value);
+    const rng=()=>Math.random();
+    const normal=()=>Math.sqrt(-2*Math.log(rng()))*Math.cos(2*Math.PI*rng());
+    let target=mean + Math.sqrt(vari)*normal();
+    let acc=0;
+    for(const s of segs){
+      for(const st of s.steps||[]){
+        const [i0,i1]=st.way_points||[0,0];
+        const d=st.distance||0;
+        acc += d/1000;
+        if(acc >= target){
+          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+          logRest(`[STAT] ${ (cumDist[i1]/1000).toFixed(2) } km → HIT`);
+          target = mean + Math.sqrt(vari)*normal();
+          acc=0;
+        }
+      }
+    }
+  }
+
+  // 割合トリガ
+  if($('optPercentTrigger').checked){
+    const stepPct=Number($('percentStep').value)/100;
+    const metric=$('percentMetric').value;
+    const totalDist = feature.properties.summary.distance;
+    const totalTime = feature.properties.summary.duration;
+    const totalEnergy = await totalEnergyKJ(feature,mass,flat);
+    let passed=0;
+    for(const s of segs){
+      for(const st of s.steps||[]){
+        const [i0,i1]=st.way_points||[0,0];
+        const d=st.distance||0,t=st.duration||0;
+        const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
+        const dE = energyStepKJ(d,dz,mass,flat);
+        if(metric==='distance') passed+=d;
+        else if(metric==='time') passed+=t;
+        else passed+=dE;
+        const total = metric==='distance'? totalDist : metric==='time'? totalTime : totalEnergy;
+        while(passed >= stepPct*total){
+          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+          logRest(`[PERCENT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
+          passed = 0;
+        }
+      }
+    }
+  }
+  return raw;
+}
+
+
 </script>
 </body>
 </html>
+
