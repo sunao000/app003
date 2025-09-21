@@ -437,19 +437,22 @@ async function overpassRetry(query){
 }
 async function fetchPoisAround(lat, lon, baseRadius){
   const cats=[
-    '(node["amenity"="convenience"];way["amenity"="convenience"];node["shop"="convenience"];way["shop"="convenience"];)',
-    '(node["shop"="supermarket"];way["shop"="supermarket"];)',
-    '(node["shop"="chemist"];node["shop"="pharmacy"];way["shop"="chemist"];way["shop"="pharmacy"];)'
+    '(node["amenity"="convenience"];way["amenity"="convenience"];node["shop"="convenience"];way["shop"="convenience"])',
+    '(node["shop"="supermarket"];way["shop"="supermarket"])',
+    '(node["shop"="chemist"];node["shop"="pharmacy"];way["shop"="chemist"];way["shop"="pharmacy"])'
   ];
   let radius = baseRadius;
   let results = [];
   for(let attempt=0; attempt<4 && results.length===0; attempt++){
     for(const block of cats){
-      const query=`[out:json][timeout:25];(${block})(around:${radius},${lat},${lon});out center 50;`;
+      // ← 末尾に ; を付けずにここで初めて付ける
+      const query=`[out:json][timeout:25];${block}(around:${radius},${lat},${lon});out center 50;`;
       try{
         const data = await overpassRetry(query);
         (data.elements||[]).forEach(e=>{
-          const ll = e.type==='node' ? [e.lat,e.lon] : (e.center ? [e.center.lat,e.center.lon] : null);
+          const ll = e.type==='node'
+            ? [e.lat, e.lon]
+            : (e.center ? [e.center.lat, e.center.lon] : null);
           if(!ll) return;
           const name = (e.tags && (e.tags['name:ja'] || e.tags.brand || e.tags.name)) || 'POI';
           results.push({name, lat: ll[0], lon: ll[1]});
@@ -462,8 +465,10 @@ async function fetchPoisAround(lat, lon, baseRadius){
   }
   return results;
 }
+
 </script>
 </body>
 </html>
+
 
 
