@@ -3,12 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>自転車ルート比較＋休憩（統合版 完全版）</title>
+<title>自転車ルート比較＋休憩（統合版 完全）</title>
 
 <!-- ライブラリ -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
 body{margin:0;font-family:system-ui,sans-serif}
@@ -16,8 +17,9 @@ body{margin:0;font-family:system-ui,sans-serif}
 html,body { height: 100%; margin: 0; padding: 0; }
 #controls{display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:#f7f7f7}
 #pointList{list-style:none;margin:0;padding:0}
-#pointList li{padding:4px 8px;border:1px solid #ccc;background:#fafafa;margin-bottom:4px;cursor:move;display:flex;justify-content:space-between}
-button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0 6px;font-size:12px}
+#pointList li{padding:4px 8px;border:1px solid #ccc;background:#fafafa;margin-bottom:4px;cursor:move;display:flex;justify-content:space-between;align-items:center;gap:8px}
+#pointList li small{color:#666}
+button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0 6px;font-size:12px;cursor:pointer}
 .section{padding:8px;background:#fff;border-top:1px solid #eee}
 #routeButtons{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
 #routeButtons button{padding:8px 12px;border-radius:8px;border:1px solid #ccc;background:#f4f4f4;cursor:pointer}
@@ -105,12 +107,23 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 <!-- サマリー -->
 <div id="summary">
-  <div class="section">
-  <h3>区間統計（各ルート）</h3>
-  <div id="legSummaryAll" style="font-size:0.9rem;"></div>
-  </div>
   <div id="routeInfo">未計算</div>
   <div id="distanceScore" class="muted"></div>
+</div>
+
+<!-- 区間統計（各ルート） -->
+<div class="section">
+  <h3>区間統計（各ルート）</h3>
+  <div id="legSummaryAll" style="font-size:0.9rem;"></div>
+</div>
+
+<!-- グラフ描画＆ダウンロード -->
+<div id="charts" style="display:none;">
+  <canvas id="energyChart"></canvas>
+</div>
+<div class="section">
+  <button id="btnDownloadTime" disabled>PNG（時間×累積kJ）</button>
+  <button id="btnDownloadDist" disabled>PNG（距離×累積kJ）</button>
 </div>
 
 <script>
@@ -132,12 +145,13 @@ window.addEventListener('DOMContentLoaded',()=>{
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
               {attribution:'©OpenStreetMap'}).addTo(map);
 
+  // 検索ボタン：検索後に入力欄クリア
   $('searchBtn').onclick = () => {
-  const val = $('placeInput').value.trim();
-  if (!val) return;
-  nomSearch(val);
-  $('placeInput').value = '';   // ← 入力欄をリセット
-};
+    const val = $('placeInput').value.trim();
+    if (!val) return;
+    nomSearch(val);
+    $('placeInput').value = ''; // 入力欄リセット
+  };
 
   $('locBtn').onclick=()=>navigator.geolocation.getCurrentPosition(
       p=>addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude}),
@@ -152,65 +166,19 @@ window.addEventListener('DOMContentLoaded',()=>{
   $('btnShowShortest').onclick = ()=> toggleSingleRoute('shortest', $('btnShowShortest'));
   $('btnShowFastest').onclick  = ()=> toggleSingleRoute('fastest',  $('btnShowFastest'));
   $('btnShowSlope').onclick    = ()=> toggleSingleRoute('slope',    $('btnShowSlope'));
+
+  // グラフダウンロードボタン
+  $('btnDownloadTime').onclick = ()=>{
+    if(!routeData.fastest){alert('まずルート計算してください');return;}
+    const s = buildEnergySeries(routeData.fastest,75,18,true);
+    if(s.labels.length>1) downloadLineChart(s);
+  };
+  $('btnDownloadDist').onclick = ()=>{
+    if(!routeData.fastest){alert('まずルート計算してください');return;}
+    const s = buildEnergySeries(routeData.fastest,75,18,false);
+    if(s.labels.length>1) downloadLineChart(s);
+  };
 });
-
-// 区間ごとの距離(km)・時間(分)・エネルギー(kJ)配列を返す
-async function calcLegStats(feature, mass, flat){
-  const coords = feature.geometry.coordinates;
-  const segs   = feature.properties.segments || [];
-  const hasEle = coords[0].length >= 3;
-
-  const legDist = [], legTime = [], legEnergy = [];
-  for (const s of segs) {
-    for (const step of (s.steps || [])) {
-      const [i0, i1] = step.way_points || [0, 0];
-      const d  = step.distance || 0;        // m
-      const t  = step.duration || 0;        // s
-      const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
-      legDist.push(d / 1000);
-      legTime.push(t / 60);
-      legEnergy.push(energyStepKJ(d, dz, mass, flat));
-    }
-  }
-  return {dist:legDist, time:legTime, energy:legEnergy};
-}
-
-// 平均・分散・標準偏差
-function summaryStats(arr){
-  if(!arr.length) return {mean:0,var:0,std:0};
-  const m = arr.reduce((a,b)=>a+b,0)/arr.length;
-  const v = arr.reduce((a,b)=>a+(b-m)**2,0)/arr.length;
-  return {mean:m, var:v, std:Math.sqrt(v)};
-}
-
-async function showRouteLegSummary(){
-  const mass = 75;   // 体重+バイク質量
-  const flat = 18;   // 平坦係数
-
-  const outDiv = document.getElementById('legSummaryAll');
-  outDiv.innerHTML = '';
-
-  for (const key of ['shortest','fastest','slope']){
-    const feat = routeData[key];
-    if(!feat) continue;
-
-    const s = await calcLegStats(feat, mass, flat);
-
-    const ds = summaryStats(s.dist);
-    const ts = summaryStats(s.time);
-    const es = summaryStats(s.energy);
-
-    const html = `
-      <details open style="margin-bottom:8px">
-        <summary><b>${key}</b>  区間統計 (平均 / 分散 / 標準偏差)</summary>
-        距離: ${ds.mean.toFixed(2)} km / ${ds.var.toFixed(2)} km² / σ=${ds.std.toFixed(2)} km<br>
-        時間: ${ts.mean.toFixed(2)} 分 / ${ts.var.toFixed(2)} 分² / σ=${ts.std.toFixed(2)} 分<br>
-        エネルギー: ${es.mean.toFixed(1)} kJ / ${es.var.toFixed(1)} kJ² / σ=${es.std.toFixed(1)} kJ
-      </details>`;
-    outDiv.innerHTML += html;
-  }
-}
-
 
 /* ====== 地点管理 ====== */
 function addPoint(p){
@@ -225,7 +193,8 @@ function drawList(){
   const ul=$('pointList'); ul.innerHTML='';
   pts.forEach((p,i)=>{
     const li=document.createElement('li'); li.dataset.idx=i;
-    li.innerHTML=`${p.name}<button class="del">×</button>`;
+    const name = p.name + (p.isRest? '（休憩）':'');
+    li.innerHTML = `<span>${name}${p.isRest? ' <small>(' + p.lat.toFixed(5)+','+p.lon.toFixed(5)+')</small>':''}</span><button class="del">×</button>`;
     li.querySelector('.del').onclick=()=>{pts.splice(i,1); fixType(); drawList();};
     ul.appendChild(li);
   });
@@ -333,9 +302,11 @@ async function drawRoutes(){
     const rests = await makeRestPoints(routeData.fastest, mass, flat);
 
     if (rests.length) {
+      // リストに挿入（ゴール直前）
       rests.forEach(r => pts.splice(pts.length-1, 0,
-       { name:'休憩', lat:r.lat, lon:r.lon, type:'via', isRest:true }));
+        { name:'休憩', lat:r.lat, lon:r.lon, type:'via', isRest:true }));
       drawList();
+
       // 休憩マーカー
       for (const r of rests) {
         L.marker([r.lat, r.lon], {
@@ -370,9 +341,17 @@ async function drawRoutes(){
       }
     }
 
+    // デフォルト表示は最速
     showSingleRoute('fastest', true);
-    await showRouteLegSummary();
     setActiveButton($('btnShowFastest'));
+
+    // 区間統計を表示
+    await showRouteLegSummary();
+
+    // グラフボタン有効化
+    $('btnDownloadTime').disabled = false;
+    $('btnDownloadDist').disabled = false;
+
   }catch(e){
     console.error(e);
     alert('ルート取得失敗: '+e.message);
@@ -411,6 +390,7 @@ async function makeRestPoints(feature,mass,flat){
   const thr=basis==='time' ? Number($('restMinutes').value)*60 : Number($('restKJ').value);
   let raw=[];
 
+  // 積算トリガ
   if($('optAccum').checked){
     let acc=0;
     for(const s of segs){
@@ -429,6 +409,7 @@ async function makeRestPoints(feature,mass,flat){
     }
   }
 
+  // 統計トリガ
   if($('optStatTrigger').checked){
     const mean=Number($('statMean').value), vari=Number($('statVar').value);
     const rng=()=>Math.random();
@@ -450,6 +431,7 @@ async function makeRestPoints(feature,mass,flat){
     }
   }
 
+  // 割合トリガ
   if($('optPercentTrigger').checked){
     const stepPct=Number($('percentStep').value)/100;
     const metric=$('percentMetric').value;
@@ -478,7 +460,131 @@ async function makeRestPoints(feature,mass,flat){
   return raw;
 }
 
-/* ===== POI 取得 ===== */
+/* ===== 区間統計（各ルート） ===== */
+async function calcLegStats(feature, mass, flat){
+  const coords = feature.geometry.coordinates;
+  const segs   = feature.properties.segments || [];
+  const hasEle = coords[0].length >= 3;
+
+  const legDist = [], legTime = [], legEnergy = [];
+  for (const s of segs) {
+    for (const step of (s.steps || [])) {
+      const [i0, i1] = step.way_points || [0, 0];
+      const d  = step.distance || 0;  // m
+      const t  = step.duration || 0;  // s
+      const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
+      legDist.push(d / 1000);
+      legTime.push(t / 60);
+      legEnergy.push(energyStepKJ(d, dz, mass, flat));
+    }
+  }
+  return {dist:legDist, time:legTime, energy:legEnergy};
+}
+function summaryStats(arr){
+  if(!arr.length) return {mean:0,var:0,std:0};
+  const m = arr.reduce((a,b)=>a+b,0)/arr.length;
+  const v = arr.reduce((a,b)=>a+(b-m)**2,0)/arr.length;
+  return {mean:m, var:v, std:Math.sqrt(v)};
+}
+async function showRouteLegSummary(){
+  const mass = 75, flat = 18;
+  const outDiv = document.getElementById('legSummaryAll');
+  outDiv.innerHTML = '';
+  for (const key of ['shortest','fastest','slope']){
+    const feat = routeData[key];
+    if(!feat) continue;
+    const s = await calcLegStats(feat, mass, flat);
+    const ds = summaryStats(s.dist);
+    const ts = summaryStats(s.time);
+    const es = summaryStats(s.energy);
+    const label = key==='shortest'?'最短':key==='fastest'?'最速':'勾配';
+    const html = `
+      <details open style="margin-bottom:8px">
+        <summary><b>${label}</b> 区間統計（平均 / 分散 / 標準偏差）</summary>
+        距離: ${ds.mean.toFixed(2)} km / ${ds.var.toFixed(2)} km² / σ=${ds.std.toFixed(2)} km<br>
+        時間: ${ts.mean.toFixed(2)} 分 / ${ts.var.toFixed(2)} 分² / σ=${ts.std.toFixed(2)} 分<br>
+        エネルギー: ${es.mean.toFixed(1)} kJ / ${es.var.toFixed(1)} kJ² / σ=${es.std.toFixed(1)} kJ
+      </details>`;
+    outDiv.innerHTML += html;
+  }
+}
+
+/* ===== グラフ出力 ===== */
+function tempShowChartsContainer(show){
+  const c = document.getElementById('charts');
+  if(show){
+    c.style.display='block';
+    c.style.position='absolute';
+    c.style.left='-99999px';
+    c.style.visibility='hidden';
+  }else{
+    c.removeAttribute('style');
+    c.style.display='none';
+  }
+}
+function prepareCanvasSize(canvas,w,h){
+  canvas.width=w||1600;
+  canvas.height=h||900;
+}
+async function downloadLineChart(obj){
+  tempShowChartsContainer(true);
+  const ec = document.getElementById('energyChart');
+  prepareCanvasSize(ec,1600,900);
+
+  const chart = new Chart(ec,{
+    type:'line',
+    data:{labels:obj.labels,
+          datasets:[{label:obj.ylabel,data:obj.values,borderWidth:2,pointRadius:0}]},
+    options:{
+      animation:false,
+      plugins:{legend:{display:false}},
+      scales:{ x:{title:{display:true,text:obj.xlabel}},
+               y:{title:{display:true,text:obj.ylabel}} }
+    }
+  });
+
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+
+  ec.toBlob(blob=>{
+    if(blob){
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = u; a.download = obj.filename; a.click();
+      setTimeout(()=>{ URL.revokeObjectURL(u); chart.destroy(); tempShowChartsContainer(false); },300);
+    }else{
+      chart.destroy(); tempShowChartsContainer(false);
+    }
+  });
+}
+function buildEnergySeries(feature,mass,flat,byTime=true){
+  const coords = feature.geometry.coordinates;
+  const hasEle = coords[0].length >= 3;
+  const segs   = feature.properties.segments || [];
+  let cumT=0, cumD=0, cumE=0;
+  const labels=[], values=[];
+  for(const s of segs){
+    for(const st of (s.steps||[])){
+      const [i0,i1]=st.way_points||[0,0];
+      const d  = st.distance || 0;
+      const t  = st.duration || 0;
+      const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
+      cumE += energyStepKJ(d,dz,mass,flat);
+      cumD += d;
+      cumT += t;
+      labels.push(byTime? (cumT/60).toFixed(2) : (cumD/1000).toFixed(2));
+      values.push(+cumE.toFixed(1));
+    }
+  }
+  return {
+    labels,
+    values,
+    xlabel: byTime?'時間 (分)':'距離 (km)',
+    ylabel:'累積エネルギー (kJ)',
+    filename: byTime?'energy_over_time.png':'energy_over_distance.png'
+  };
+}
+
+/* ===== POI 取得（正しい Overpass 文法） ===== */
 async function overpassRetry(query){
   const url='https://overpass-api.de/api/interpreter';
   let delay=800;
@@ -498,52 +604,41 @@ async function overpassRetry(query){
   }
   throw new Error('Overpass retry exceeded');
 }
-async function fetchPoisAround(lat, lon, baseRadius) {
-  const categories = [
-    `node["amenity"="convenience"](around:{R},{LAT},{LON});way["amenity"="convenience"](around:{R},{LAT},{LON})`,
-    `node["shop"="supermarket"](around:{R},{LAT},{LON});way["shop"="supermarket"](around:{R},{LAT},{LON})`,
-    `node["shop"="chemist"](around:{R},{LAT},{LON});
-     node["shop"="pharmacy"](around:{R},{LAT},{LON});
-     way["shop"="chemist"](around:{R},{LAT},{LON});
-     way["shop"="pharmacy"](around:{R},{LAT},{LON})`
-  ];
-
+async function fetchPoisAround(lat, lon, baseRadius){
   let radius = baseRadius;
   let results = [];
+  for(let attempt=0; attempt<4 && results.length===0; attempt++){
+    const statements = [
+      `node["amenity"="convenience"](around:${radius},${lat},${lon})`,
+      `way["amenity"="convenience"](around:${radius},${lat},${lon})`,
+      `node["shop"="convenience"](around:${radius},${lat},${lon})`,
+      `way["shop"="convenience"](around:${radius},${lat},${lon})`,
+      `node["shop"="supermarket"](around:${radius},${lat},${lon})`,
+      `way["shop"="supermarket"](around:${radius},${lat},${lon})`,
+      `node["shop"="chemist"](around:${radius},${lat},${lon})`,
+      `node["shop"="pharmacy"](around:${radius},${lat},${lon})`,
+      `way["shop"="chemist"](around:${radius},${lat},${lon})`,
+      `way["shop"="pharmacy"](around:${radius},${lat},${lon})`
+    ];
+    const block = '(' + statements.join(';') + ';)';
+    const query = `[out:json][timeout:25];${block}out center 50;`;
 
-  for (let attempt = 0; attempt < 4 && results.length === 0; attempt++) {
-    for (const cat of categories) {
-      const q = `[out:json][timeout:25];
-                 (${cat
-                   .replace(/\{R\}/g, radius)
-                   .replace(/\{LAT\}/g, lat)
-                   .replace(/\{LON\}/g, lon)});
-                 out center 50;`;
-      try {
-        const data = await overpassRetry(q);
-        (data.elements || []).forEach(e => {
-          const ll = e.type === 'node'
-            ? [e.lat, e.lon]
-            : (e.center ? [e.center.lat, e.center.lon] : null);
-          if (!ll) return;
-          const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
-          results.push({ name, lat: ll[0], lon: ll[1] });
-        });
-      } catch (err) {
-        console.warn('POI取得失敗', err);
-      }
+    try{
+      const data = await overpassRetry(query);
+      (data.elements||[]).forEach(e=>{
+        const ll = e.type==='node' ? [e.lat,e.lon] : (e.center ? [e.center.lat,e.center.lon] : null);
+        if(!ll) return;
+        const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
+        results.push({name, lat: ll[0], lon: ll[1]});
+      });
+    }catch(err){
+      console.warn('POI取得失敗', err);
     }
-    if (!results.length) radius += 200; // ヒットしなければ半径を広げる
+
+    if(!results.length) radius += 200; // ヒットしなければ半径拡大
   }
   return results;
 }
-
-
 </script>
 </body>
 </html>
-
-
-
-
-
