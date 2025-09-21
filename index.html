@@ -587,93 +587,118 @@ function buildEnergySeries(feature,mass,flat,byTime=true){
   };
 }
 
-/* ===== POI 取得（正しい Overpass 文法） ===== */
-async function overpassRetry(query){
-  const url='https://overpass-api.de/api/interpreter';
-  let delay=800;
-  for(let i=0;i<7;i++){
-    const r=await fetch(url,{
-      method:'POST',
-      headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:`data=${encodeURIComponent(query)}`
-    });
-    if(r.ok) return r.json();
-    if([429,504,502].includes(r.status)){
-      await new Promise(res=>setTimeout(res,delay));
-      delay = Math.min(5000, Math.round(delay*1.8));
-      continue;
+// ---------- Overpass: 単発リクエスト ----------
+async function overpassQuery(query) {
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+  let lastStatus = 0, lastText = '';
+
+  for (const ep of endpoints) {
+    try {
+      const r = await fetch(ep, {
+        method: 'POST',
+        headers: {'Content-Type':'application/x-www-form-urlencoded'},
+        body: 'data=' + encodeURIComponent(query)
+      });
+      lastStatus = r.status;
+      if (r.ok) return r.json();
+      lastText = await r.text();
+      // 400 は構文エラーの可能性が高いのでクエリを出しておく
+      if (r.status === 400) {
+        console.warn('[Overpass] 400 detected. Query was:\n' + query);
+      }
+    } catch (e) {
+      lastText = e.message || String(e);
     }
-    throw new Error('Overpass '+r.status);
   }
-  throw new Error('Overpass retry exceeded');
+  throw new Error(`[Overpass] all attempts failed. Last status=${lastStatus}. Snippet=${lastText.slice(0,300)}`);
 }
 
-// ①生テキストPOST → ②x-www-form-urlencoded(data=...) → ③別エンドポイント の順で試す
-async function overpassQuery(query, endpoint="https://overpass-api.de/api/interpreter") {
-  // 送る前に最低限のチェック
-  if (typeof query !== 'string' || !query.includes('out center')) {
-    throw new Error('Overpass query is malformed (missing "out center")');
-  }
-
-  // 方式A: text/plain, raw query
-  let r = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
-    body: query
-  });
-  if (r.ok) return r.json();
-
-  // 400 等の詳細を拾う
-  let bodyText = '';
-  try { bodyText = await r.text(); } catch {}
-  console.debug('[Overpass][A] status=', r.status, 'body=', bodyText.slice(0, 500));
-
-  // 方式B: application/x-www-form-urlencoded (data=...)
-  r = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-    body: 'data=' + encodeURIComponent(query)
-  });
-  if (r.ok) return r.json();
-  try { bodyText = await r.text(); } catch {}
-  console.debug('[Overpass][B] status=', r.status, 'body=', bodyText.slice(0, 500));
-
-  // 方式C: 代替エンドポイントへフォールバック
-  const alt = "https://overpass.kumi.systems/api/interpreter";
-  r = await fetch(alt, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
-    body: query
-  });
-  if (r.ok) return r.json();
-  try { bodyText = await r.text(); } catch {}
-  console.debug('[Overpass][C] status=', r.status, 'body=', bodyText.slice(0, 500));
-
-  // ここまで全部ダメなら、詳細を含めて throw
-  const msg = `[Overpass] all attempts failed. Last status=${r.status}. Snippet=${bodyText.slice(0, 500)}`;
-  throw new Error(msg);
-}
-
-// レート制御 + リトライ（429/502/504は待って再試行）
+// ---------- Overpass: リトライ（指数バックオフ） ----------
 async function overpassRetry(query) {
-  let delay = 600;
-  for (let i = 0; i < 5; i++) {
+  let delay = 800;
+  for (let i=0;i<5;i++) {
     try {
       return await overpassQuery(query);
     } catch (e) {
-      // 400は構文エラーの可能性濃厚なので即座に throw
-      const s = String(e.message || '');
-      if (s.includes('status=400') || s.includes('Bad Request') || s.includes('malformed')) {
-        console.error('[Overpass] 400 detected. Query was:\n' + query);
-        throw e;
-      }
-      // 一旦待って再試行
-      await new Promise(res => setTimeout(res, delay));
-      delay = Math.min(5000, Math.round(delay * 1.8));
+      // 4xx（構文）なら即終了。429/5xx はリトライ。
+      if (String(e).includes('status=400')) throw e;
+      await new Promise(res=>setTimeout(res, delay));
+      delay = Math.min(6000, Math.round(delay*1.8));
     }
   }
-  throw new Error('Overpass retry exceeded');
+  // 最後にもう一回だけ
+  return await overpassQuery(query);
 }
+
+// ---------- POI取得（カテゴリトグル + nwr 統合/安定版） ----------
+async function fetchPoisAround(latRaw, lonRaw, baseRadius) {
+  const useConvenience = document.getElementById('chkConvenience')?.checked ?? true;
+  const useSuper       = document.getElementById('chkSuper')?.checked ?? true;
+  const useDrug        = document.getElementById('chkDrug')?.checked ?? true;
+
+  if (!useConvenience && !useSuper && !useDrug) return [];
+
+  // 座標サニタイズ（微小丸めで過剰桁を抑制）
+  const round6 = v => Math.round(Number(v) * 1e6) / 1e6;
+  const lat = round6(latRaw), lon = round6(lonRaw);
+
+  let radius  = Math.max(30, Number(baseRadius) || 300);
+  let results = [];
+
+  const buildQuery = () => {
+    const clauses = [];
+
+    // amenity=convenience を個別に
+    if (useConvenience) {
+      clauses.push(`nwr(around:${radius},${lat},${lon})["amenity"="convenience"]`);
+    }
+
+    // shop= の値を正規表現でまとめる
+    const shopVals = [];
+    if (useConvenience) shopVals.push('convenience');
+    if (useSuper)       shopVals.push('supermarket');
+    if (useDrug)        shopVals.push('chemist','pharmacy');
+
+    if (shopVals.length) {
+      const re = `^(${shopVals.join('|')})$`;
+      clauses.push(`nwr(around:${radius},${lat},${lon})["shop"~"${re}"]`);
+    }
+
+    if (!clauses.length) return null;
+    // center は way/rel のみに効くが、node が混在していても使用可。qt で軽量化。
+    return `[out:json][timeout:25];
+(${clauses.join(';')});
+out center qt;`;
+  };
+
+  for (let attempt=0; attempt<4 && results.length===0; attempt++) {
+    const query = buildQuery();
+    if (!query) break;
+    try {
+      const data = await overpassRetry(query);
+      (data.elements || []).forEach(e => {
+        const ll = e.type === 'node'
+          ? [e.lat, e.lon]
+          : (e.center ? [e.center.lat, e.center.lon] : null);
+        if (!ll) return;
+        const name =
+          (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
+        results.push({ name, lat: ll[0], lon: ll[1] });
+      });
+      console.debug('[Overpass] hits=', results.length, 'radius=', radius);
+    } catch (err) {
+      console.warn('POI取得失敗', err);
+      // 構文系はリトライしても無駄なので打ち切り
+      if (String(err).includes('status=400')) break;
+    }
+    if (!results.length) radius += 200; // 見つからなければ半径拡大
+  }
+  return results;
+}
+
 
   
 function sanitizeCoord(n, fallback) {
@@ -683,77 +708,6 @@ function sanitizeCoord(n, fallback) {
   return Math.round(v * 1e6) / 1e6;
 }
 
-async function fetchPoisAround(latRaw, lonRaw, baseRadius) {
-  const useConvenience = document.getElementById('chkConvenience')?.checked ?? true;
-  const useSuper       = document.getElementById('chkSuper')?.checked ?? true;
-  const useDrug        = document.getElementById('chkDrug')?.checked ?? true;
-
-  if (!useConvenience && !useSuper && !useDrug) {
-    console.debug('[POI] no categories selected -> skip');
-    return [];
-  }
-
-  const sanitizeCoord = (n, fb) => {
-    const v = Number(n);
-    if (!isFinite(v)) return Number(fb);
-    return Math.round(v * 1e6) / 1e6;
-  };
-  const lat = sanitizeCoord(latRaw, 35.0);
-  const lon = sanitizeCoord(lonRaw, 135.0);
-  if (!(lat > -90 && lat < 90 && lon > -180 && lon < 180)) {
-    console.warn('[POI] invalid lat/lon -> skip', { lat, lon });
-    return [];
-  }
-
-  let radius  = Math.max(10, Number(baseRadius) || 300);
-  let results = [];
-
-  for (let attempt = 0; attempt < 4 && results.length === 0; attempt++) {
-    const clauses = [];
-
-    // ★ ここがポイント： (around:...) を先に書いて、その後に ["key"="value"]
-    if (useConvenience) {
-      clauses.push(`node(around:${radius},${lat},${lon})["amenity"="convenience"]`);
-      clauses.push(`way(around:${radius},${lat},${lon})["amenity"="convenience"]`);
-      clauses.push(`node(around:${radius},${lat},${lon})["shop"="convenience"]`);
-      clauses.push(`way(around:${radius},${lat},${lon})["shop"="convenience"]`);
-    }
-    if (useSuper) {
-      clauses.push(`node(around:${radius},${lat},${lon})["shop"="supermarket"]`);
-      clauses.push(`way(around:${radius},${lat},${lon})["shop"="supermarket"]`);
-    }
-    if (useDrug) {
-      clauses.push(`node(around:${radius},${lat},${lon})["shop"="chemist"]`);
-      clauses.push(`node(around:${radius},${lat},${lon})["shop"="pharmacy"]`);
-      clauses.push(`way(around:${radius},${lat},${lon})["shop"="chemist"]`);
-      clauses.push(`way(around:${radius},${lat},${lon})["shop"="pharmacy"]`);
-    }
-
-    if (!clauses.length) break;
-
-    // ※ out は center のみ（余計な数値や修飾は付けない）
-    const query = `[out:json][timeout:25];(${clauses.join(';')});out center;`;
-    console.debug('[Overpass][QUERY]\n' + query);
-
-    try {
-      const data = await overpassRetry(query);
-      (data.elements || []).forEach(e => {
-        const ll = e.type === 'node'
-          ? [e.lat, e.lon]
-          : (e.center ? [e.center.lat, e.center.lon] : null);
-        if (!ll) return;
-        const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
-        results.push({ name, lat: ll[0], lon: ll[1] });
-      });
-      console.debug('[Overpass] hits=', results.length, 'radius=', radius);
-    } catch (err) {
-      console.warn('POI取得失敗', err);
-    }
-
-    if (!results.length) radius += 200; // 見つからなければ半径拡大
-  }
-  return results;
-}
 
 
 
@@ -763,6 +717,7 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius) {
 </script>
 </body>
 </html>
+
 
 
 
