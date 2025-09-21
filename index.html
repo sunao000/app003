@@ -128,7 +128,13 @@ window.addEventListener('DOMContentLoaded',()=>{
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
               {attribution:'©OpenStreetMap'}).addTo(map);
 
-  $('searchBtn').onclick=()=>{if($('placeInput').value) nomSearch($('placeInput').value);};
+  $('searchBtn').onclick = () => {
+  const val = $('placeInput').value.trim();
+  if (!val) return;
+  nomSearch(val);
+  $('placeInput').value = '';   // ← 入力欄をリセット
+};
+
   $('locBtn').onclick=()=>navigator.geolocation.getCurrentPosition(
       p=>addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude}),
       ()=>alert('現在地取得失敗'));
@@ -456,3 +462,4 @@ async function fetchPoisAround(lat, lon, baseRadius){
 </script>
 </body>
 </html>
+
