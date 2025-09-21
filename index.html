@@ -43,6 +43,16 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 </div>
 
 <!-- ★休憩設定パネル -->
+<!-- POI 検索設定 -->
+<div class="section">
+  <details open>
+    <summary>休憩地点まわりのPOI</summary>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      <label><input type="checkbox" id="poiToggle" checked> POI表示</label>
+      <label>初期半径 <input id="poiRadius" type="number" value="300" min="50" step="50"> m</label>
+    </div>
+  </details>
+</div>
 <div class="section">
   <details open>
     <summary>休憩設定</summary>
@@ -272,6 +282,28 @@ async function drawRoutes(){
           icon:new L.Icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/purple-dot.png',
                            iconSize:[32,32],iconAnchor:[16,32]})
         }).bindTooltip('休憩').addTo(markerLayer);
+            // === POI検索 ===
+    if($('poiToggle').checked){
+      const baseRadius = Number($('poiRadius').value)||300;
+      for(const r of rests){
+        try{
+          const pois = await fetchPoisAround(r.lat, r.lon, baseRadius);
+          logRest(`[POI] ${ (r.routeD/1000).toFixed(2) } km: ${pois.length}件ヒット`);
+          // 地図マーカー
+          pois.forEach(po=>{
+            L.marker([po.lat, po.lon],{
+              icon:new L.Icon({
+                iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/purple-dot.png',
+                iconSize:[32,32],iconAnchor:[16,32]
+              })
+            }).bindTooltip(po.name).addTo(markerLayer);
+          });
+        }catch(e){
+          logRest(`[POI] ${ (r.routeD/1000).toFixed(2) } km: 取得失敗`);
+        }
+      }
+    }
+
       });
     }
 
@@ -391,9 +423,59 @@ async function makeRestPoints(feature,mass,flat){
   }
   return raw;
 }
+// === POI 取得（精度向上版） ===
+async function overpassRetry(query){
+  const url='https://overpass-api.de/api/interpreter';
+  let delay=800;
+  for(let i=0;i<7;i++){
+    const r=await fetch(url,{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:`data=${encodeURIComponent(query)}`
+    });
+    if(r.ok) return r.json();
+    if([429,504,502].includes(r.status)){
+      await new Promise(res=>setTimeout(res,delay));
+      delay = Math.min(5000, Math.round(delay*1.8));
+      continue;
+    }
+    throw new Error('Overpass '+r.status);
+  }
+  throw new Error('Overpass retry exceeded');
+}
+
+async function fetchPoisAround(lat, lon, baseRadius){
+  const cats=[
+    '(node["amenity"="convenience"];way["amenity"="convenience"];node["shop"="convenience"];way["shop"="convenience"];)',
+    '(node["shop"="supermarket"];way["shop"="supermarket"];)',
+    '(node["shop"="chemist"];node["shop"="pharmacy"];way["shop"="chemist"];way["shop"="pharmacy"];)'
+  ];
+  let radius = baseRadius;
+  let results = [];
+  for(let attempt=0; attempt<4 && results.length===0; attempt++){
+    for(const block of cats){
+      const query=`[out:json][timeout:25];(${block})(around:${radius},${lat},${lon});out center 50;`;
+      try{
+        const data = await overpassRetry(query);
+        (data.elements||[]).forEach(e=>{
+          const ll = e.type==='node' ? [e.lat,e.lon] : (e.center ? [e.center.lat,e.center.lon] : null);
+          if(!ll) return;
+          const name = (e.tags && (e.tags['name:ja'] || e.tags.brand || e.tags.name)) || 'POI';
+          results.push({name, lat: ll[0], lon: ll[1]});
+        });
+      }catch(err){
+        console.warn('POI取得失敗', err);
+      }
+    }
+    if(!results.length) radius += 200; // 半径拡大
+  }
+  return results;
+}
+
 
 
 </script>
 </body>
 </html>
+
 
