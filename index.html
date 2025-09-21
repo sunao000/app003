@@ -105,6 +105,10 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 <!-- サマリー -->
 <div id="summary">
+  <div class="section">
+  <h3>区間統計（各ルート）</h3>
+  <div id="legSummaryAll" style="font-size:0.9rem;"></div>
+  </div>
   <div id="routeInfo">未計算</div>
   <div id="distanceScore" class="muted"></div>
 </div>
@@ -149,6 +153,64 @@ window.addEventListener('DOMContentLoaded',()=>{
   $('btnShowFastest').onclick  = ()=> toggleSingleRoute('fastest',  $('btnShowFastest'));
   $('btnShowSlope').onclick    = ()=> toggleSingleRoute('slope',    $('btnShowSlope'));
 });
+
+// 区間ごとの距離(km)・時間(分)・エネルギー(kJ)配列を返す
+async function calcLegStats(feature, mass, flat){
+  const coords = feature.geometry.coordinates;
+  const segs   = feature.properties.segments || [];
+  const hasEle = coords[0].length >= 3;
+
+  const legDist = [], legTime = [], legEnergy = [];
+  for (const s of segs) {
+    for (const step of (s.steps || [])) {
+      const [i0, i1] = step.way_points || [0, 0];
+      const d  = step.distance || 0;        // m
+      const t  = step.duration || 0;        // s
+      const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
+      legDist.push(d / 1000);
+      legTime.push(t / 60);
+      legEnergy.push(energyStepKJ(d, dz, mass, flat));
+    }
+  }
+  return {dist:legDist, time:legTime, energy:legEnergy};
+}
+
+// 平均・分散・標準偏差
+function summaryStats(arr){
+  if(!arr.length) return {mean:0,var:0,std:0};
+  const m = arr.reduce((a,b)=>a+b,0)/arr.length;
+  const v = arr.reduce((a,b)=>a+(b-m)**2,0)/arr.length;
+  return {mean:m, var:v, std:Math.sqrt(v)};
+}
+
+async function showRouteLegSummary(){
+  const mass = 75;   // 体重+バイク質量
+  const flat = 18;   // 平坦係数
+
+  const outDiv = document.getElementById('legSummaryAll');
+  outDiv.innerHTML = '';
+
+  for (const key of ['shortest','fastest','slope']){
+    const feat = routeData[key];
+    if(!feat) continue;
+
+    const s = await calcLegStats(feat, mass, flat);
+
+    const ds = summaryStats(s.dist);
+    const ts = summaryStats(s.time);
+    const es = summaryStats(s.energy);
+
+    const html = `
+      <details open style="margin-bottom:8px">
+        <summary><b>${key}</b>  区間統計 (平均 / 分散 / 標準偏差)</summary>
+        距離: ${ds.mean.toFixed(2)} km / ${ds.var.toFixed(2)} km² / σ=${ds.std.toFixed(2)} km<br>
+        時間: ${ts.mean.toFixed(2)} 分 / ${ts.var.toFixed(2)} 分² / σ=${ts.std.toFixed(2)} 分<br>
+        エネルギー: ${es.mean.toFixed(1)} kJ / ${es.var.toFixed(1)} kJ² / σ=${es.std.toFixed(1)} kJ
+      </details>`;
+    outDiv.innerHTML += html;
+  }
+}
+
 
 /* ====== 地点管理 ====== */
 function addPoint(p){
@@ -309,6 +371,7 @@ async function drawRoutes(){
     }
 
     showSingleRoute('fastest', true);
+    await showRouteLegSummary();
     setActiveButton($('btnShowFastest'));
   }catch(e){
     console.error(e);
@@ -479,6 +542,7 @@ async function fetchPoisAround(lat, lon, baseRadius) {
 </script>
 </body>
 </html>
+
 
 
 
