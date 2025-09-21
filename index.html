@@ -688,17 +688,18 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius) {
   const useSuper       = document.getElementById('chkSuper')?.checked ?? true;
   const useDrug        = document.getElementById('chkDrug')?.checked ?? true;
 
-  // どれも選択されていないなら何も取得しない
   if (!useConvenience && !useSuper && !useDrug) {
     console.debug('[POI] no categories selected -> skip');
     return [];
   }
 
-  // 座標サニタイズ（NaN/未定義で 400 が出やすい）
+  const sanitizeCoord = (n, fb) => {
+    const v = Number(n);
+    if (!isFinite(v)) return Number(fb);
+    return Math.round(v * 1e6) / 1e6;
+  };
   const lat = sanitizeCoord(latRaw, 35.0);
   const lon = sanitizeCoord(lonRaw, 135.0);
-
-  // 念のため緯度経度の範囲チェック
   if (!(lat > -90 && lat < 90 && lon > -180 && lon < 180)) {
     console.warn('[POI] invalid lat/lon -> skip', { lat, lon });
     return [];
@@ -710,29 +711,28 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius) {
   for (let attempt = 0; attempt < 4 && results.length === 0; attempt++) {
     const clauses = [];
 
+    // ★ ここがポイント： (around:...) を先に書いて、その後に ["key"="value"]
     if (useConvenience) {
-      clauses.push(`node["amenity"="convenience"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["amenity"="convenience"](around:${radius},${lat},${lon})`);
-      clauses.push(`node["shop"="convenience"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["shop"="convenience"](around:${radius},${lat},${lon})`);
+      clauses.push(`node(around:${radius},${lat},${lon})["amenity"="convenience"]`);
+      clauses.push(`way(around:${radius},${lat},${lon})["amenity"="convenience"]`);
+      clauses.push(`node(around:${radius},${lat},${lon})["shop"="convenience"]`);
+      clauses.push(`way(around:${radius},${lat},${lon})["shop"="convenience"]`);
     }
     if (useSuper) {
-      clauses.push(`node["shop"="supermarket"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["shop"="supermarket"](around:${radius},${lat},${lon})`);
+      clauses.push(`node(around:${radius},${lat},${lon})["shop"="supermarket"]`);
+      clauses.push(`way(around:${radius},${lat},${lon})["shop"="supermarket"]`);
     }
     if (useDrug) {
-      clauses.push(`node["shop"="chemist"](around:${radius},${lat},${lon})`);
-      clauses.push(`node["shop"="pharmacy"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["shop"="chemist"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["shop"="pharmacy"](around:${radius},${lat},${lon})`);
+      clauses.push(`node(around:${radius},${lat},${lon})["shop"="chemist"]`);
+      clauses.push(`node(around:${radius},${lat},${lon})["shop"="pharmacy"]`);
+      clauses.push(`way(around:${radius},${lat},${lon})["shop"="chemist"]`);
+      clauses.push(`way(around:${radius},${lat},${lon})["shop"="pharmacy"]`);
     }
 
-    if (clauses.length === 0) break; // safety
+    if (!clauses.length) break;
 
-    const query =
-      `[out:json][timeout:25];(${clauses.join(';')});out center;`;
-
-    // 送るクエリを必ずログ出力（ブラウザのコンソールでコピペ・検証できます）
+    // ※ out は center のみ（余計な数値や修飾は付けない）
+    const query = `[out:json][timeout:25];(${clauses.join(';')});out center;`;
     console.debug('[Overpass][QUERY]\n' + query);
 
     try {
@@ -747,13 +747,10 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius) {
       });
       console.debug('[Overpass] hits=', results.length, 'radius=', radius);
     } catch (err) {
-      // ここでサーバーの返した本文抜粋やクエリが console に出ます
       console.warn('POI取得失敗', err);
     }
 
-    if (!results.length) {
-      radius += 200; // 見つからなければ半径拡大
-    }
+    if (!results.length) radius += 200; // 見つからなければ半径拡大
   }
   return results;
 }
@@ -762,9 +759,11 @@ async function fetchPoisAround(latRaw, lonRaw, baseRadius) {
 
 
 
+
 </script>
 </body>
 </html>
+
 
 
 
