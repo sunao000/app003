@@ -3,9 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>自転車ルート比較＋休憩（POI精度強化版） v6.1</title>
+<title>自転車ルート比較＋休憩（Nominatim/Google切替版） v6.2</title>
 
-<!-- Leaflet & Chart.js -->
 <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
@@ -20,11 +19,8 @@ body{margin:0;font-family:system-ui,sans-serif}
 button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0 6px;font-size:12px}
 .section{padding:8px;background:#fff;border-top:1px solid #eee}
 .group{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:6px}
-.small{font-size:.88em;color:#555}
 label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:10px}
-#routeButtons{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
-#routeButtons button{padding:6px 10px;border-radius:6px;border:1px solid #ccc;background:#f4f4f4}
-#routeButtons button.active{background:#dfefff;border-color:#7aa7ff}
+#routeButtons{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:8px}
 </style>
 </head>
 <body>
@@ -32,9 +28,13 @@ label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:10px}
 <div id="controls">
   <input id="placeInput" placeholder="地名・住所" style="width:260px">
   <button id="searchBtn">検索</button>
-  <label><input type="checkbox" id="nearbyOnly">近くの場所のみ</label>
+  <label>検索プロバイダー
+    <select id="searchProvider">
+      <option value="nominatim" selected>Nominatim(OSM)</option>
+      <option value="google">Google Places</option>
+    </select>
+  </label>
   <button id="locBtn">現在地追加</button>
-
   <select id="profileSelect">
     <option value="cycling-road" selected>ロードバイク</option>
     <option value="cycling-regular">自転車（一般）</option>
@@ -70,23 +70,22 @@ label.chk{display:inline-flex;align-items:center;gap:6px;margin-right:10px}
 <div id="routeButtons" class="section">
   <button id="btnShowShortest">最短</button>
   <button id="btnShowFastest">最速</button>
-  <button id="btnShowSlope">勾配考慮</button>
+  <button id="btnShowSlope">勾配</button>
 </div>
 
 <div class="section">
   <details open>
     <summary>休憩・POIログ</summary>
-    <div id="restDebug" class="small"></div>
+    <div id="restDebug" style="font-size:.9em"></div>
   </details>
 </div>
 
 <script>
-/* ==== 設定 ==== */
-const ORS_KEY = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; // ← OpenRouteService APIキー
-const GOOGLE_PLACES_KEY = 'AIzaSyBgFjac_zibqUEmg2Ys1OCbKgA5Lw9qLbw'; // ← Google Places APIキー（必ずサーバ経由推奨）
+/* === APIキー === */
+const ORS_KEY = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; // OpenRouteService
+const GOOGLE_PLACES_KEY = 'AIzaSyBgFjac_zibqUEmg2Ys1OCbKgA5Lw9qLbw'; // Google Places (必ずサーバ側で管理)
 
 function $(id){return document.getElementById(id);}
-function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
 function icon(c){return new L.Icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/'+c+'-dot.png',iconSize:[32,32],iconAnchor:[16,32]});}
 const ICONS={start:icon('green'),via:icon('blue'),goal:icon('red')};
 
@@ -94,36 +93,60 @@ let map=L.map('map').setView([34.07,134.55],11);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'©OpenStreetMap'}).addTo(map);
 let pts=[], markerLayer, routeLayers={}, routeData={};
 
-/* 検索UI */
-$('searchBtn').onclick=()=>{const q=$('placeInput').value.trim();if(q)nomSearch(q);};
+$('searchBtn').onclick=()=>{const q=$('placeInput').value.trim();if(q)searchPlace(q);}
 $('locBtn').onclick=()=>navigator.geolocation.getCurrentPosition(
   p=>addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude}),
   ()=>alert('現在地取得失敗'));
 $('drawBtn').onclick=drawRoutes;
 
-async function nomSearch(q){
-  let url='https://nominatim.openstreetmap.org/search?format=json&limit=10&q='+encodeURIComponent(q);
-  if($('nearbyOnly').checked){
-    const b=map.getBounds();
-    url += '&viewbox='+[b.getWest(),b.getNorth(),b.getEast(),b.getSouth()].join(',')+'&bounded=1';
-  }
-  const res=await fetch(url); const arr=await res.json();
-  arr.forEach(o=>addPoint({name:o.display_name,lat:+o.lat,lon:+o.lon}));
+/* ---- 地名検索 ---- */
+async function searchPlace(q){
+  const provider=$('searchProvider').value;
+  const results = provider==='google'
+    ? await searchGooglePlaces(q)
+    : await searchNominatim(q);
+  results.forEach(o=>addPoint(o));
 }
+
+async function searchNominatim(q){
+  const url='https://nominatim.openstreetmap.org/search?format=json&limit=10&q='+encodeURIComponent(q);
+  const arr=await (await fetch(url)).json();
+  return arr.map(o=>({name:o.display_name,lat:+o.lat,lon:+o.lon}));
+}
+
+async function searchGooglePlaces(q){
+  // /proxy は自前サーバで Google Places Text Search API を中継
+  const url=`/proxy?url=${encodeURIComponent(
+    `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(q)}&language=ja&key=${GOOGLE_PLACES_KEY}`)}`;
+  const js=await (await fetch(url)).json();
+  return (js.results||[]).map(r=>({
+    name:r.name,
+    lat:r.geometry.location.lat,
+    lon:r.geometry.location.lng
+  }));
+}
+
+/* ---- 地点管理 ---- */
 function addPoint(p){p.type=pts.length?'':'start';pts.forEach(d=>{if(d.type==='goal')d.type='via';});
   pts.push(p);if(pts.length>1)pts[pts.length-1].type='goal';drawList();}
 function drawList(){
   const ul=$('pointList'); ul.innerHTML='';
   pts.forEach((p,i)=>{
-    const li=document.createElement('li');
-    li.textContent=p.name;
+    const li=document.createElement('li');li.textContent=p.name;
     const del=document.createElement('button');del.textContent='×';del.className='del';
     del.onclick=()=>{pts.splice(i,1);drawList();}; li.appendChild(del);
     ul.appendChild(li);
   });
 }
 
-/* ルート計算 */
+/* ---- ルート計算と表示 ---- */
+async function ors(body,profile,pref){
+  const r=await fetch(`https://api.openrouteservice.org/v2/directions/${profile}/geojson`,
+    {method:'POST',headers:{'Content-Type':'application/json','Authorization':ORS_KEY},
+     body:JSON.stringify({...body,preference:pref})});
+  return r.json();
+}
+
 async function drawRoutes(){
   if(pts.length<2){alert('2地点以上必要');return;}
   if(markerLayer) map.removeLayer(markerLayer);
@@ -136,30 +159,23 @@ async function drawRoutes(){
   const shortest=await ors(body,profile,'shortest');
   const fastest =await ors(body,profile,'fastest');
   routeData={shortest:shortest.features[0],fastest:fastest.features[0],slope:shortest.features[0]};
-
-  showRoute('fastest'); // 初期表示
+  showRoute('fastest');
 
   // POI検索
   if($('poiToggle').checked){
     const radius=Number($('poiRadius').value)||400;
     const cats=[...document.querySelectorAll('.poiCat:checked')].map(x=>x.value);
     const provider=$('poiProvider').value;
-    $('restDebug').textContent='POI検索中…';
-    const results=[];
+    const log=[];
     for(const p of pts){
       const pois=await fetchPoisAround(p.lat,p.lon,radius,cats,provider);
-      if(pois.length)results.push(`${p.name} → ${pois.length}件`);
+      if(pois.length)log.push(`${p.name}: ${pois.length}件`);
     }
-    $('restDebug').textContent=results.join('\n')||'該当なし';
+    $('restDebug').textContent=log.join('\n')||'該当なし';
   }
 }
-async function ors(body,profile,pref){
-  const r=await fetch(`https://api.openrouteservice.org/v2/directions/${profile}/geojson`,
-    {method:'POST',headers:{'Content-Type':'application/json','Authorization':ORS_KEY},body:JSON.stringify({...body,preference:pref})});
-  return r.json();
-}
 
-/* 単一ルート表示 */
+/* ---- ルート切替 ---- */
 function showRoute(type){
   Object.values(routeLayers).forEach(l=>{if(l)map.removeLayer(l);});
   const color={shortest:'#ff0000',fastest:'#0066ff',slope:'#ff9900'}[type];
@@ -170,7 +186,7 @@ $('btnShowShortest').onclick=()=>showRoute('shortest');
 $('btnShowFastest').onclick =()=>showRoute('fastest');
 $('btnShowSlope').onclick   =()=>showRoute('slope');
 
-/* ==== POI 取得 ==== */
+/* ---- POI検索 (Overpass or Google) ---- */
 async function fetchPoisAround(lat, lon, radiusM, categories, provider='overpass'){
   return provider==='google'
     ? await fetchPoisGoogle(lat,lon,radiusM,categories)
@@ -189,28 +205,27 @@ async function fetchPoisOverpass(lat,lon,radiusM,cats){
     });
   });
   const url='https://overpass-api.de/api/interpreter?data=[out:json];('+q+');out center;';
-  const r=await fetch(url); const js=await r.json();
+  const js=await (await fetch(url)).json();
   return (js.elements||[]).map(e=>({
-    name:(e.tags&& (e.tags['name:ja']||e.tags.name||e.tags.brand))||'POI',
-    lat:e.lat||e.center.lat, lon:e.lon||e.center.lon, cat:'misc'
+    name:(e.tags && (e.tags['name:ja']||e.tags.name||e.tags.brand))||'POI',
+    lat:e.lat||e.center.lat,
+    lon:e.lon||e.center.lon,
+    cat:'misc'
   }));
 }
-
-/* Google Places: サーバ側 /proxy 経由で呼び出すこと */
 async function fetchPoisGoogle(lat,lon,radiusM,cats){
   const typeMap={conv:'convenience_store',super:'supermarket',drug:'drugstore'};
-  const all=[];
+  const out=[];
   for(const c of cats){
     const t=typeMap[c]; if(!t) continue;
     const url=`/proxy?url=${encodeURIComponent(
       `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lon}&radius=${radiusM}&type=${t}&language=ja&key=${GOOGLE_PLACES_KEY}`)}`;
-    const r=await fetch(url);
-    const js=await r.json();
-    (js.results||[]).forEach(p=>all.push({
+    const js=await (await fetch(url)).json();
+    (js.results||[]).forEach(p=>out.push({
       name:p.name, lat:p.geometry.location.lat, lon:p.geometry.location.lng, cat:c
     }));
   }
-  return all;
+  return out;
 }
 </script>
 </body>
