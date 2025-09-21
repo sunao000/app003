@@ -435,40 +435,51 @@ async function overpassRetry(query){
   }
   throw new Error('Overpass retry exceeded');
 }
-async function fetchPoisAround(lat, lon, baseRadius){
-  const cats=[
-    '(node["amenity"="convenience"];way["amenity"="convenience"];node["shop"="convenience"];way["shop"="convenience"])',
-    '(node["shop"="supermarket"];way["shop"="supermarket"])',
-    '(node["shop"="chemist"];node["shop"="pharmacy"];way["shop"="chemist"];way["shop"="pharmacy"])'
+async function fetchPoisAround(lat, lon, baseRadius) {
+  const categories = [
+    `node["amenity"="convenience"](around:{R},{LAT},{LON});way["amenity"="convenience"](around:{R},{LAT},{LON})`,
+    `node["shop"="supermarket"](around:{R},{LAT},{LON});way["shop"="supermarket"](around:{R},{LAT},{LON})`,
+    `node["shop"="chemist"](around:{R},{LAT},{LON});
+     node["shop"="pharmacy"](around:{R},{LAT},{LON});
+     way["shop"="chemist"](around:{R},{LAT},{LON});
+     way["shop"="pharmacy"](around:{R},{LAT},{LON})`
   ];
+
   let radius = baseRadius;
   let results = [];
-  for(let attempt=0; attempt<4 && results.length===0; attempt++){
-    for(const block of cats){
-      // ← 末尾に ; を付けずにここで初めて付ける
-      const query=`[out:json][timeout:25];${block}(around:${radius},${lat},${lon});out center 50;`;
-      try{
-        const data = await overpassRetry(query);
-        (data.elements||[]).forEach(e=>{
-          const ll = e.type==='node'
+
+  for (let attempt = 0; attempt < 4 && results.length === 0; attempt++) {
+    for (const cat of categories) {
+      const q = `[out:json][timeout:25];
+                 (${cat
+                   .replace(/\{R\}/g, radius)
+                   .replace(/\{LAT\}/g, lat)
+                   .replace(/\{LON\}/g, lon)});
+                 out center 50;`;
+      try {
+        const data = await overpassRetry(q);
+        (data.elements || []).forEach(e => {
+          const ll = e.type === 'node'
             ? [e.lat, e.lon]
             : (e.center ? [e.center.lat, e.center.lon] : null);
-          if(!ll) return;
-          const name = (e.tags && (e.tags['name:ja'] || e.tags.brand || e.tags.name)) || 'POI';
-          results.push({name, lat: ll[0], lon: ll[1]});
+          if (!ll) return;
+          const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
+          results.push({ name, lat: ll[0], lon: ll[1] });
         });
-      }catch(err){
+      } catch (err) {
         console.warn('POI取得失敗', err);
       }
     }
-    if(!results.length) radius += 200;
+    if (!results.length) radius += 200; // ヒットしなければ半径を広げる
   }
   return results;
 }
 
+
 </script>
 </body>
 </html>
+
 
 
 
