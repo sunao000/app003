@@ -608,38 +608,40 @@ async function overpassRetry(query){
   throw new Error('Overpass retry exceeded');
 }
 async function fetchPoisAround(lat, lon, baseRadius){
-  // ---- チェック状態を取得 ----
   const useConvenience = $('chkConvenience').checked;
   const useSuper       = $('chkSuper').checked;
   const useDrug        = $('chkDrug').checked;
 
-  // 何も選ばれていなければ即 return
+  // どれも選択されていない場合は空配列を返す
   if (!useConvenience && !useSuper && !useDrug) return [];
 
-  let radius = baseRadius;
+  let radius  = baseRadius;
   let results = [];
 
   for (let attempt = 0; attempt < 4 && results.length === 0; attempt++) {
-    let clauses = [];
+    const parts = [];
 
     if (useConvenience) {
-      clauses.push(`node["amenity"="convenience"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["amenity"="convenience"](around:${radius},${lat},${lon})`);
-      clauses.push(`node["shop"="convenience"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["shop"="convenience"](around:${radius},${lat},${lon})`);
+      parts.push(`node["amenity"="convenience"](around:${radius},${lat},${lon})`);
+      parts.push(`way["amenity"="convenience"](around:${radius},${lat},${lon})`);
+      parts.push(`node["shop"="convenience"](around:${radius},${lat},${lon})`);
+      parts.push(`way["shop"="convenience"](around:${radius},${lat},${lon})`);
     }
     if (useSuper) {
-      clauses.push(`node["shop"="supermarket"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["shop"="supermarket"](around:${radius},${lat},${lon})`);
+      parts.push(`node["shop"="supermarket"](around:${radius},${lat},${lon})`);
+      parts.push(`way["shop"="supermarket"](around:${radius},${lat},${lon})`);
     }
     if (useDrug) {
-      clauses.push(`node["shop"="chemist"](around:${radius},${lat},${lon})`);
-      clauses.push(`node["shop"="pharmacy"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["shop"="chemist"](around:${radius},${lat},${lon})`);
-      clauses.push(`way["shop"="pharmacy"](around:${radius},${lat},${lon})`);
+      parts.push(`node["shop"="chemist"](around:${radius},${lat},${lon})`);
+      parts.push(`node["shop"="pharmacy"](around:${radius},${lat},${lon})`);
+      parts.push(`way["shop"="chemist"](around:${radius},${lat},${lon})`);
+      parts.push(`way["shop"="pharmacy"](around:${radius},${lat},${lon})`);
     }
 
-    const query = `[out:json][timeout:25];(${clauses.join(';')});out center;`;
+    // parts が空のときはクエリ送信しない
+    if (parts.length === 0) break;
+
+    const query = `[out:json][timeout:25];(${parts.join(';')});out center;`;
 
     try {
       const data = await overpassRetry(query);
@@ -655,14 +657,16 @@ async function fetchPoisAround(lat, lon, baseRadius){
       console.warn('POI取得失敗', err);
     }
 
-    if (!results.length) radius += 200; // 見つからなければ半径拡大
+    if (!results.length) radius += 200; // ヒットしなければ半径を広げる
   }
   return results;
 }
 
 
+
 </script>
 </body>
 </html>
+
 
 
