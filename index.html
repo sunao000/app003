@@ -277,32 +277,36 @@ async function drawRoutes(){
       });
       drawList();
       // 休憩マーカー追加
-      rests.forEach(r=>{
-        L.marker([r.lat,r.lon],{
-          icon:new L.Icon({iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/purple-dot.png',
-                           iconSize:[32,32],iconAnchor:[16,32]})
-        }).bindTooltip('休憩').addTo(markerLayer);
-            // === POI検索 ===
-    if($('poiToggle').checked){
-      const baseRadius = Number($('poiRadius').value)||300;
-      for(const r of rests){
-        try{
-          const pois = await fetchPoisAround(r.lat, r.lon, baseRadius);
-          logRest(`[POI] ${ (r.routeD/1000).toFixed(2) } km: ${pois.length}件ヒット`);
-          // 地図マーカー
-          pois.forEach(po=>{
-            L.marker([po.lat, po.lon],{
-              icon:new L.Icon({
-                iconUrl:'https://maps.gstatic.com/mapfiles/ms2/micons/purple-dot.png',
-                iconSize:[32,32],iconAnchor:[16,32]
-              })
-            }).bindTooltip(po.name).addTo(markerLayer);
-          });
-        }catch(e){
-          logRest(`[POI] ${ (r.routeD/1000).toFixed(2) } km: 取得失敗`);
-        }
-      }
+for (const r of rests) {
+  L.marker([r.lat, r.lon], {
+    icon: new L.Icon({
+      iconUrl: 'https://maps.gstatic.com/mapfiles/ms2/micons/purple-dot.png',
+      iconSize: [32, 32], iconAnchor: [16, 32]
+    })
+  }).bindTooltip('休憩').addTo(markerLayer);
+}
+
+// === POI検索 ===
+if ($('poiToggle').checked) {
+  const baseRadius = Number($('poiRadius').value) || 300;
+  for (const r of rests) {
+    try {
+      const pois = await fetchPoisAround(r.lat, r.lon, baseRadius);
+      logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: ${pois.length}件ヒット`);
+      pois.forEach(po => {
+        L.marker([po.lat, po.lon], {
+          icon: new L.Icon({
+            iconUrl: 'https://maps.gstatic.com/mapfiles/ms2/micons/purple-dot.png',
+            iconSize: [32, 32], iconAnchor: [16, 32]
+          })
+        }).bindTooltip(po.name).addTo(markerLayer);
+      });
+    } catch (e) {
+      logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 取得失敗`);
     }
+  }
+}
+
 
       });
     }
@@ -477,5 +481,6 @@ async function fetchPoisAround(lat, lon, baseRadius){
 </script>
 </body>
 </html>
+
 
 
