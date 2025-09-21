@@ -1,17 +1,230 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-<meta charset="utf-8">
-<title>Leaflet Test</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
-<style>#map{height:400px;width:100%;}</style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自転車ルート比較＋休憩（統合版 Step2）</title>
+
+<!-- ライブラリ -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+
+<style>
+body{margin:0;font-family:system-ui,sans-serif}
+#map { height: 520px; width: 100%; }
+html,body { height: 100%; margin: 0; padding: 0; }
+#controls{display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:#f7f7f7}
+#pointList{list-style:none;margin:0;padding:0}
+#pointList li{padding:4px 8px;border:1px solid #ccc;background:#fafafa;margin-bottom:4px;cursor:move;display:flex;justify-content:space-between}
+button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0 6px;font-size:12px}
+.section{padding:8px;background:#fff;border-top:1px solid #eee}
+#routeButtons{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+#routeButtons button{padding:8px 12px;border-radius:8px;border:1px solid #ccc;background:#f4f4f4;cursor:pointer}
+#routeButtons button.active{background:#dfefff;border-color:#7aa7ff}
+#summary{padding:8px;background:#fafafa;border-top:1px solid #ddd;font-size:0.92rem}
+</style>
 </head>
 <body>
+
+<!-- 操作パネル -->
+<div id="controls">
+  <input id="placeInput" placeholder="地名・住所" style="width:260px">
+  <button id="searchBtn">検索</button>
+  <button id="locBtn">現在地追加</button>
+  <button id="drawBtn">ルート計算</button>
+
+  <label>プロファイル
+    <select id="profileSelect">
+      <option value="cycling-road" selected>ロードバイク</option>
+      <option value="cycling-regular">自転車（一般）</option>
+    </select>
+  </label>
+</div>
+
+<!-- 地点リストと地図 -->
+<ul id="pointList"></ul>
 <div id="map"></div>
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<!-- ルート切替ボタン -->
+<div id="routeButtons" class="section">
+  <button id="btnShowShortest">最短ルート表示</button>
+  <button id="btnShowFastest">最速ルート表示</button>
+  <button id="btnShowSlope">勾配考慮ルート表示</button>
+</div>
+
+<!-- サマリー -->
+<div id="summary">
+  <div id="routeInfo">未計算</div>
+  <div id="distanceScore" class="muted"></div>
+</div>
+
 <script>
-  var map=L.map('map').setView([34.07,134.55],11);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+/* ====== 設定 ====== */
+const ORS_KEY  = '5b3ce3597851110001cf62481af47799d9c344bf86dd4b340f9f9ff9'; // ←★OpenRouteService APIキーを入れてください
+const ORS_ROOT = 'https://api.openrouteservice.org';
+
+/* ====== 共有ヘルパ ====== */
+let map, pts=[], markerLayer, routeLayers={}, lastDirTs=0;
+let routeData = { shortest:null, fastest:null, slope:null };
+
+function $(id){return document.getElementById(id);}
+function formatDist(m){return (m/1000).toFixed(2)+' km';}
+function formatDur(s){const m=Math.round(s/60);return m<60? m+' 分' : (Math.floor(m/60)+' 時間 '+(m%60)+' 分');}
+
+/* ====== 初期化 ====== */
+window.addEventListener('DOMContentLoaded',()=>{
+  // 地図
+  map=L.map('map').setView([34.07,134.55],11);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+              {attribution:'©OpenStreetMap'}).addTo(map);
+
+  $('searchBtn').onclick=()=>{if($('placeInput').value) nomSearch($('placeInput').value);};
+  $('locBtn').onclick=()=>navigator.geolocation.getCurrentPosition(
+      p=>addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude}),
+      ()=>alert('現在地取得失敗'));
+  $('drawBtn').onclick=drawRoutes;
+
+  // 並べ替え
+  new Sortable($('pointList'),{
+    animation:150,
+    onEnd:()=>{pts=Array.from($('pointList').children).map(li=>pts[li.dataset.idx]);fixType();drawList();}
+  });
+
+  // ルート切替ボタン
+  $('btnShowShortest').onclick = ()=> toggleSingleRoute('shortest', $('btnShowShortest'));
+  $('btnShowFastest').onclick  = ()=> toggleSingleRoute('fastest',  $('btnShowFastest'));
+  $('btnShowSlope').onclick    = ()=> toggleSingleRoute('slope',    $('btnShowSlope'));
+});
+
+/* ====== 地点管理 ====== */
+function addPoint(p){
+  p.type=pts.length?'':'start';
+  pts.forEach(d=>{if(d.type==='goal')d.type='via';});
+  pts.push(p);
+  if(pts.length>1) pts[pts.length-1].type='goal';
+  drawList();
+}
+function fixType(){ if(pts[0]) pts[0].type='start'; if(pts.length>1) pts[pts.length-1].type='goal'; }
+function drawList(){
+  const ul=$('pointList'); ul.innerHTML='';
+  pts.forEach((p,i)=>{
+    const li=document.createElement('li'); li.dataset.idx=i;
+    li.innerHTML=`${p.name}<button class="del">×</button>`;
+    li.querySelector('.del').onclick=()=>{pts.splice(i,1); fixType(); drawList();};
+    ul.appendChild(li);
+  });
+}
+
+/* ====== 検索 ====== */
+async function nomSearch(q){
+  const url=`https://nominatim.openstreetmap.org/search?format=json&limit=10&q=${encodeURIComponent(q)}`;
+  const arr=await (await fetch(url)).json();
+  if(!arr.length){alert('見つかりません');return;}
+  const o=arr[0];
+  addPoint({name:o.display_name,lat:+o.lat,lon:+o.lon});
+}
+
+/* ====== ORS ====== */
+async function post(url,body){
+  const r=await fetch(url,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':ORS_KEY},
+    body:JSON.stringify(body)
+  });
+  if(!r.ok) throw new Error(r.status);
+  return r.json();
+}
+async function dir(body,profile){
+  // 軽いレート制御
+  const wait=1100-(Date.now()-lastDirTs); if(wait>0) await new Promise(r=>setTimeout(r,wait));
+  const d=await post(`${ORS_ROOT}/v2/directions/${profile}/geojson`,body);
+  lastDirTs=Date.now();
+  return d;
+}
+
+/* ====== ルート計算・表示 ====== */
+function clearRouteLayers(){
+  Object.values(routeLayers).forEach(l=>{ if(l) map.removeLayer(l); });
+  routeLayers={};
+}
+function setActiveButton(btn){
+  document.querySelectorAll('#routeButtons button').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+}
+function showSingleRoute(type, noFit){
+  clearRouteLayers();
+  const colorMap = { shortest:'#ff0000', fastest:'#0066ff', slope:'#ff9900' };
+  const f = routeData[type];
+  if(!f){ alert('まだ計算していません'); return; }
+  routeLayers[type] = L.geoJSON(f, { style:{ color: colorMap[type], weight: 6 } }).addTo(map);
+  if(!noFit) map.fitBounds(routeLayers[type].getBounds().pad(0.1));
+}
+function toggleSingleRoute(type, btn){
+  showSingleRoute(type);
+  setActiveButton(btn);
+}
+
+async function drawRoutes(){
+  if(pts.length<2){alert('2地点以上登録してください');return;}
+
+  // 既存レイヤクリア
+  clearRouteLayers();
+  if(markerLayer) map.removeLayer(markerLayer);
+
+  // マーカー
+  markerLayer=L.layerGroup().addTo(map);
+  const ICON = (c)=>new L.Icon({iconUrl:`https://maps.gstatic.com/mapfiles/ms2/micons/${c}-dot.png`,iconSize:[32,32],iconAnchor:[16,32]});
+  const ICONS = {start:ICON('green'),via:ICON('blue'),goal:ICON('red')};
+  pts.forEach(p=>markerLayer.addLayer(L.marker([p.lat,p.lon],{icon:ICONS[p.type||'via']}).bindTooltip(p.name)));
+
+  // 3種ルート計算
+  const coords=pts.map(p=>[p.lon,p.lat]);
+  const profile = $('profileSelect').value;
+  const base={coordinates:coords,elevation:true,extra_info:['steepness']};
+
+  try{
+    const shortest = await dir({...base, preference:'shortest'}, profile);
+    const fastest  = await dir({...base, preference:'fastest'},  profile);
+
+    // 勾配は候補の中から「傾斜合計が最小」を採用（2点間の時だけオルタナ）
+    let slope = shortest.features[0];
+    if(coords.length===2){
+      const alt = await dir({...base, preference:'shortest',
+        alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.4}}, profile);
+      const feats = alt.features || [];
+      if(feats.length){
+        function steepSum(f){
+          const vals=((f.properties||{}).extras||{}).steepness?.values||[];
+          let s=0; for(const v of vals){ s+=Math.abs(v[2]||0); }
+          return s;
+        }
+        slope = feats.reduce((a,b)=> steepSum(a)<steepSum(b)?a:b);
+      }
+    }
+
+    routeData.shortest = shortest.features[0];
+    routeData.fastest  = fastest.features[0];
+    routeData.slope    = slope;
+
+    // サマリー表示
+    const s1 = routeData.shortest.properties.summary;
+    const s2 = routeData.fastest.properties.summary;
+    const s3 = routeData.slope.properties.summary;
+    $('routeInfo').innerHTML =
+      `<b>最短</b> ${formatDist(s1.distance)} / ${formatDur(s1.duration)}<br>`+
+      `<b>最速</b> ${formatDist(s2.distance)} / ${formatDur(s2.duration)}<br>`+
+      `<b>勾配</b> ${formatDist(s3.distance)} / ${formatDur(s3.duration)}`;
+    $('distanceScore').textContent = '距離差（最速-最短）: '+(s2.distance - s1.distance).toFixed(0)+' m';
+
+    // デフォルト表示は最速
+    showSingleRoute('fastest', true);
+    setActiveButton($('btnShowFastest'));
+  }catch(e){
+    console.error(e);
+    alert('ルート取得失敗: '+e.message);
+  }
+}
 </script>
 </body>
 </html>
