@@ -608,20 +608,23 @@ async function fetchPoisAround(lat, lon, baseRadius){
   let radius = baseRadius;
   let results = [];
   for(let attempt=0; attempt<4 && results.length===0; attempt++){
-    const statements = [
-      `node["amenity"="convenience"](around:${radius},${lat},${lon})`,
-      `way["amenity"="convenience"](around:${radius},${lat},${lon})`,
-      `node["shop"="convenience"](around:${radius},${lat},${lon})`,
-      `way["shop"="convenience"](around:${radius},${lat},${lon})`,
-      `node["shop"="supermarket"](around:${radius},${lat},${lon})`,
-      `way["shop"="supermarket"](around:${radius},${lat},${lon})`,
-      `node["shop"="chemist"](around:${radius},${lat},${lon})`,
-      `node["shop"="pharmacy"](around:${radius},${lat},${lon})`,
-      `way["shop"="chemist"](around:${radius},${lat},${lon})`,
-      `way["shop"="pharmacy"](around:${radius},${lat},${lon})`
-    ];
-    const block = '(' + statements.join(';') + ';)';
-    const query = `[out:json][timeout:25];${block}out center 50;`;
+    // 1回のリクエストにまとめる
+    const query = `
+      [out:json][timeout:25];
+      (
+        node["amenity"="convenience"](around:${radius},${lat},${lon});
+        way["amenity"="convenience"](around:${radius},${lat},${lon});
+        node["shop"="convenience"](around:${radius},${lat},${lon});
+        way["shop"="convenience"](around:${radius},${lat},${lon});
+        node["shop"="supermarket"](around:${radius},${lat},${lon});
+        way["shop"="supermarket"](around:${radius},${lat},${lon});
+        node["shop"="chemist"](around:${radius},${lat},${lon});
+        node["shop"="pharmacy"](around:${radius},${lat},${lon});
+        way["shop"="chemist"](around:${radius},${lat},${lon});
+        way["shop"="pharmacy"](around:${radius},${lat},${lon});
+      );
+      out center;
+    `;
 
     try{
       const data = await overpassRetry(query);
@@ -635,10 +638,12 @@ async function fetchPoisAround(lat, lon, baseRadius){
       console.warn('POI取得失敗', err);
     }
 
-    if(!results.length) radius += 200; // ヒットしなければ半径拡大
+    if(!results.length) radius += 200; // 見つからなければ半径を拡大
   }
   return results;
 }
+
 </script>
 </body>
 </html>
+
