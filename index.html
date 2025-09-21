@@ -271,6 +271,9 @@ async function drawRoutes(){
     const rests = await makeRestPoints(routeData.fastest, mass, flat);
 
     if (rests.length) {
+      rests.forEach(r => pts.splice(pts.length-1, 0,
+       { name:'休憩', lat:r.lat, lon:r.lon, type:'via', isRest:true }));
+      drawList();
       // 休憩マーカー
       for (const r of rests) {
         L.marker([r.lat, r.lon], {
@@ -462,4 +465,5 @@ async function fetchPoisAround(lat, lon, baseRadius){
 </script>
 </body>
 </html>
+
 
