@@ -47,12 +47,15 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 <!-- POI 検索設定 -->
 <div class="section">
   <details open>
-    <summary>休憩地点まわりのPOI</summary>
-    <div style="display:flex;flex-wrap:wrap;gap:8px">
-      <label><input type="checkbox" id="poiToggle" checked> POI表示</label>
-      <label>初期半径 <input id="poiRadius" type="number" value="300" min="50" step="50"> m</label>
-    </div>
-  </details>
+  <summary>休憩地点まわりのPOI</summary>
+  <div style="display:flex;flex-wrap:wrap;gap:8px">
+    <label><input type="checkbox" id="poiToggle" checked> POI表示</label>
+    <label>初期半径 <input id="poiRadius" type="number" value="300" min="50" step="50"> m</label>
+    <label><input type="checkbox" id="chkConvenience" checked> コンビニ</label>
+    <label><input type="checkbox" id="chkSuper" checked> スーパー</label>
+    <label><input type="checkbox" id="chkDrug"  checked> ドラッグストア</label>
+  </div>
+</details>
 </div>
 
 <!-- 休憩設定パネル -->
@@ -605,45 +608,61 @@ async function overpassRetry(query){
   throw new Error('Overpass retry exceeded');
 }
 async function fetchPoisAround(lat, lon, baseRadius){
+  // ---- チェック状態を取得 ----
+  const useConvenience = $('chkConvenience').checked;
+  const useSuper       = $('chkSuper').checked;
+  const useDrug        = $('chkDrug').checked;
+
+  // 何も選ばれていなければ即 return
+  if (!useConvenience && !useSuper && !useDrug) return [];
+
   let radius = baseRadius;
   let results = [];
-  for(let attempt=0; attempt<4 && results.length===0; attempt++){
-    // 1回のリクエストにまとめる
-    const query = `
-      [out:json][timeout:25];
-      (
-        node["amenity"="convenience"](around:${radius},${lat},${lon});
-        way["amenity"="convenience"](around:${radius},${lat},${lon});
-        node["shop"="convenience"](around:${radius},${lat},${lon});
-        way["shop"="convenience"](around:${radius},${lat},${lon});
-        node["shop"="supermarket"](around:${radius},${lat},${lon});
-        way["shop"="supermarket"](around:${radius},${lat},${lon});
-        node["shop"="chemist"](around:${radius},${lat},${lon});
-        node["shop"="pharmacy"](around:${radius},${lat},${lon});
-        way["shop"="chemist"](around:${radius},${lat},${lon});
-        way["shop"="pharmacy"](around:${radius},${lat},${lon});
-      );
-      out center;
-    `;
 
-    try{
+  for (let attempt = 0; attempt < 4 && results.length === 0; attempt++) {
+    let clauses = [];
+
+    if (useConvenience) {
+      clauses.push(`node["amenity"="convenience"](around:${radius},${lat},${lon})`);
+      clauses.push(`way["amenity"="convenience"](around:${radius},${lat},${lon})`);
+      clauses.push(`node["shop"="convenience"](around:${radius},${lat},${lon})`);
+      clauses.push(`way["shop"="convenience"](around:${radius},${lat},${lon})`);
+    }
+    if (useSuper) {
+      clauses.push(`node["shop"="supermarket"](around:${radius},${lat},${lon})`);
+      clauses.push(`way["shop"="supermarket"](around:${radius},${lat},${lon})`);
+    }
+    if (useDrug) {
+      clauses.push(`node["shop"="chemist"](around:${radius},${lat},${lon})`);
+      clauses.push(`node["shop"="pharmacy"](around:${radius},${lat},${lon})`);
+      clauses.push(`way["shop"="chemist"](around:${radius},${lat},${lon})`);
+      clauses.push(`way["shop"="pharmacy"](around:${radius},${lat},${lon})`);
+    }
+
+    const query = `[out:json][timeout:25];(${clauses.join(';')});out center;`;
+
+    try {
       const data = await overpassRetry(query);
-      (data.elements||[]).forEach(e=>{
-        const ll = e.type==='node' ? [e.lat,e.lon] : (e.center ? [e.center.lat,e.center.lon] : null);
-        if(!ll) return;
+      (data.elements || []).forEach(e => {
+        const ll = e.type === 'node'
+          ? [e.lat, e.lon]
+          : (e.center ? [e.center.lat, e.center.lon] : null);
+        if (!ll) return;
         const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
-        results.push({name, lat: ll[0], lon: ll[1]});
+        results.push({ name, lat: ll[0], lon: ll[1] });
       });
-    }catch(err){
+    } catch (err) {
       console.warn('POI取得失敗', err);
     }
 
-    if(!results.length) radius += 200; // 見つからなければ半径を拡大
+    if (!results.length) radius += 200; // 見つからなければ半径拡大
   }
   return results;
 }
 
+
 </script>
 </body>
 </html>
+
 
