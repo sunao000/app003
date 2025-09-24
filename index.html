@@ -829,48 +829,45 @@ function updateRestListPanel(){
   });
 }
 
-// ▼休憩地点テーブルを更新する関数
+// 休憩地点一覧（距離・座標）
 function updateRestTable() {
   const tbody = document.querySelector('#restTable tbody');
   tbody.innerHTML = '';
   if (!restList.length) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td colspan="4">休憩地点はありません</td>`;
-    tbody.appendChild(tr);
+    tbody.innerHTML = '<tr><td colspan="4">休憩地点はありません</td></tr>';
     return;
   }
   restList.forEach((r,i)=>{
     const tr = document.createElement('tr');
-    tr.innerHTML =
-      `<td>${i+1}</td>
-       <td>${r.distance}</td>
-       <td>${r.lat.toFixed(5)}</td>
-       <td>${r.lon.toFixed(5)}</td>`;
+    tr.innerHTML = `
+      <td>${i+1}</td>
+      <td>${r.distance}</td>
+      <td>${r.lat.toFixed(5)}</td>
+      <td>${r.lon.toFixed(5)}</td>`;
     tbody.appendChild(tr);
   });
 }
 
-// ▼トリガー別テーブルを更新する関数
+// 休憩トリガー別一覧
 function updateRestTriggerTable(){
   const tbody = document.querySelector('#restTriggerTable tbody');
-  tbody.innerHTML='';
+  tbody.innerHTML = '';
   if (!restList.length) {
-    const tr=document.createElement('tr');
-    tr.innerHTML='<td colspan="5">休憩地点はありません</td>';
-    tbody.appendChild(tr);
+    tbody.innerHTML = '<tr><td colspan="5">休憩地点はありません</td></tr>';
     return;
   }
   restList.forEach((r,i)=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML =
-      `<td>${i+1}</td>
-       <td>${r.trigger}</td>
-       <td>${r.distance}</td>
-       <td>${r.lat.toFixed(5)}</td>
-       <td>${r.lon.toFixed(5)}</td>`;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${i+1}</td>
+      <td>${r.trigger}</td>
+      <td>${r.distance}</td>
+      <td>${r.lat.toFixed(5)}</td>
+      <td>${r.lon.toFixed(5)}</td>`;
     tbody.appendChild(tr);
   });
 }
+
 
 
 
@@ -884,10 +881,7 @@ function updateRestTriggerTable(){
          style="border-collapse:collapse;width:100%;font-size:0.9rem;">
     <thead>
       <tr style="background:#f0f0f0">
-        <th>#</th>
-        <th>距離 (km)</th>
-        <th>緯度</th>
-        <th>経度</th>
+        <th>#</th><th>距離 (km)</th><th>緯度</th><th>経度</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -900,11 +894,7 @@ function updateRestTriggerTable(){
          style="border-collapse:collapse;width:100%;font-size:0.9rem;">
     <thead>
       <tr style="background:#f0f0f0">
-        <th>#</th>
-        <th>トリガー</th>
-        <th>距離 (km)</th>
-        <th>緯度</th>
-        <th>経度</th>
+        <th>#</th><th>トリガー</th><th>距離 (km)</th><th>緯度</th><th>経度</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -912,10 +902,12 @@ function updateRestTriggerTable(){
 </div>
 
 
+
   
 
 </body>
 </html>
+
 
 
 
