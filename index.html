@@ -428,107 +428,129 @@ async function totalEnergyKJ(feature,mass,flat){
   }
   return tot;
 }
-async function makeRestPoints(feature,mass,flat){
-  const coords=feature.geometry.coordinates;
-  const segs=(feature.properties.segments||[]);
-  const hasEle = coords[0].length>=3;
-  const cumDist=[0];
-  for(let i=1;i<coords.length;i++){
-    cumDist[i]=cumDist[i-1]+L.latLng(coords[i][1],coords[i][0]).distanceTo([coords[i-1][1],coords[i-1][0]]);
+// 休憩ポイントをトリガー別に検出する関数
+async function makeRestPoints(feature, mass, flat) {
+  const coords = feature.geometry.coordinates;
+  const segs   = feature.properties.segments || [];
+  const hasEle = coords[0].length >= 3;
+  const cumDist = [0];
+
+  // 区間ごとの累積距離(m)
+  for (let i = 1; i < coords.length; i++) {
+    cumDist[i] = cumDist[i - 1] + L.latLng(
+      coords[i][1], coords[i][0]
+    ).distanceTo([coords[i - 1][1], coords[i - 1][0]]);
   }
 
-  const basis=$('restBasis').value;
-  const thr=basis==='time' ? Number($('restMinutes').value)*60 : Number($('restKJ').value);
-  let raw=[];
+  const basis = $('restBasis').value;
+  const thr   = (basis === 'time')
+                  ? Number($('restMinutes').value) * 60
+                  : Number($('restKJ').value);
 
-  // 積算トリガ
-  if($('optAccum').checked){
-    let acc=0;
-    for(const s of segs){
-      for(const st of s.steps||[]){
-        const [i0,i1]=st.way_points||[0,0];
-        const d=st.distance||0, t=st.duration||0;
-        const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
-        const dE = energyStepKJ(d,dz,mass,flat);
-        acc += (basis==='time') ? t : dE;
-        if(acc >= thr){
+  let raw = [];
+
+  // -------- 積算トリガ --------
+  if ($('optAccum').checked) {
+    let acc = 0;
+    for (const s of segs) {
+      for (const st of s.steps || []) {
+        const [i0, i1] = st.way_points || [0, 0];
+        const d  = st.distance || 0;
+        const t  = st.duration || 0;
+        const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
+        const dE = energyStepKJ(d, dz, mass, flat);
+        acc += (basis === 'time') ? t : dE;
+
+        if (acc >= thr) {
           raw.push({
-  lat:coords[i1][1],
-  lon:coords[i1][0],
-  routeD:cumDist[i1],
-  trigger:'ACCUM'   // ★追加
-});
-
-       
-          logRest(`[ACCUM] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
-          acc=0;
+            lat: coords[i1][1],
+            lon: coords[i1][0],
+            routeD: cumDist[i1],
+            trigger: 'ACCUM'  // 積算トリガ
+          });
+          logRest(`[ACCUM] ${(cumDist[i1] / 1000).toFixed(2)} km → HIT`);
+          acc = 0;
         }
       }
     }
   }
 
-  // 統計トリガ
-  if($('optStatTrigger').checked){
-    const mean=Number($('statMean').value), vari=Number($('statVar').value);
-    const rng=()=>Math.random();
-    const normal=()=>Math.sqrt(-2*Math.log(rng()))*Math.cos(2*Math.PI*rng());
-    let target=mean + Math.sqrt(vari)*normal();
-    let acc=0;
-    for(const s of segs){
-      for(const st of s.steps||[]){
-        const [i0,i1]=st.way_points||[0,0];
-        const d=st.distance||0;
-        acc += d/1000;
-        if(acc >= target){
-          raw.push({
-  lat:coords[i1][1],
-  lon:coords[i1][0],
-  routeD:cumDist[i1],
-  trigger:'STAT'   // ★追加
-});
+  // -------- 統計トリガ --------
+  if ($('optStatTrigger').checked) {
+    const mean = Number($('statMean').value);
+    const vari = Number($('statVar').value);
+    const rng = () => Math.random();
+    const normal = () => Math.sqrt(-2 * Math.log(rng())) * Math.cos(2 * Math.PI * rng());
 
-          logRest(`[STAT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
-          target = mean + Math.sqrt(vari)*normal();
-          acc=0;
+    let target = mean + Math.sqrt(vari) * normal();
+    let acc = 0;
+
+    for (const s of segs) {
+      for (const st of s.steps || []) {
+        const [i0, i1] = st.way_points || [0, 0];
+        const d = st.distance || 0;
+        acc += d / 1000; // km換算
+
+        if (acc >= target) {
+          raw.push({
+            lat: coords[i1][1],
+            lon: coords[i1][0],
+            routeD: cumDist[i1],
+            trigger: 'STAT'  // 統計トリガ
+          });
+          logRest(`[STAT] ${(cumDist[i1] / 1000).toFixed(2)} km → HIT`);
+          target = mean + Math.sqrt(vari) * normal();
+          acc = 0;
         }
       }
     }
   }
 
-  // 割合トリガ
-  if($('optPercentTrigger').checked){
-    const stepPct=Number($('percentStep').value)/100;
-    const metric=$('percentMetric').value;
-    const totalDist = feature.properties.summary.distance;
-    const totalTime = feature.properties.summary.duration;
-    const totalEnergy = await totalEnergyKJ(feature,mass,flat);
-    let passed=0;
-    for(const s of segs){
-      for(const st of s.steps||[]){
-        const [i0,i1]=st.way_points||[0,0];
-        const d=st.distance||0,t=st.duration||0;
-        const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
-        const dE = energyStepKJ(d,dz,mass,flat);
-        if(metric==='distance') passed+=d;
-        else if(metric==='time') passed+=t;
-        else passed+=dE;
-        const total = metric==='distance'? totalDist : metric==='time'? totalTime : totalEnergy;
-        while(passed >= stepPct*total){
-          raw.push({
-  lat:coords[i1][1],
-  lon:coords[i1][0],
-  routeD:cumDist[i1],
-  trigger:'PERCENT'  // ★追加
-});
+  // -------- 割合トリガ --------
+  if ($('optPercentTrigger').checked) {
+    const stepPct = Number($('percentStep').value) / 100;
+    const metric  = $('percentMetric').value;
+    const totalDist   = feature.properties.summary.distance;
+    const totalTime   = feature.properties.summary.duration;
+    const totalEnergy = await totalEnergyKJ(feature, mass, flat);
 
-          logRest(`[PERCENT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
+    let passed = 0;
+
+    for (const s of segs) {
+      for (const st of s.steps || []) {
+        const [i0, i1] = st.way_points || [0, 0];
+        const d  = st.distance || 0;
+        const t  = st.duration || 0;
+        const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
+        const dE = energyStepKJ(d, dz, mass, flat);
+
+        if (metric === 'distance') passed += d;
+        else if (metric === 'time') passed += t;
+        else passed += dE;
+
+        const total = (metric === 'distance')
+                        ? totalDist
+                        : (metric === 'time')
+                          ? totalTime
+                          : totalEnergy;
+
+        while (passed >= stepPct * total) {
+          raw.push({
+            lat: coords[i1][1],
+            lon: coords[i1][0],
+            routeD: cumDist[i1],
+            trigger: 'PERCENT'  // 割合トリガ
+          });
+          logRest(`[PERCENT] ${(cumDist[i1] / 1000).toFixed(2)} km → HIT`);
           passed = 0;
         }
       }
     }
   }
+
   return raw;
 }
+
 
 /* ===== 区間統計（各ルート） ===== */
 async function calcLegStats(feature, mass, flat){
@@ -907,6 +929,7 @@ function updateRestTriggerTable(){
 
 </body>
 </html>
+
 
 
 
