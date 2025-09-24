@@ -153,6 +153,7 @@ const ORS_ROOT = 'https://api.openrouteservice.org';
 
 /* ====== ヘルパ ====== */
 let map, pts=[], markerLayer, routeLayers={}, lastDirTs=0;
+let restList = []; // 休憩地点を保存
 let routeData = { shortest:null, fastest:null, slope:null };
 
 // ▼▼ ここに追加：休憩リスト用変数 ▼▼
@@ -342,23 +343,21 @@ async function drawRoutes(){
 
     restList = []; // 前回のリストをリセット
 
-    if (rests.length) {
-      // リストに挿入（ゴール直前）
-     rests.forEach(r => {
-       pts.splice(pts.length-1, 0,
-                  { name:'休憩', lat:r.lat, lon:r.lon, type:'via', isRest:true });
-        // ▼ r が有効なスコープ内で push
-        restList.push({
-       distance:(r.routeD/1000).toFixed(2),
-       lat:r.lat,
-       lon:r.lon,
-       trigger:r.trigger    // ★追加
-       });
-      });
-      drawList();
-      updateRestListPanel(); // 休憩地点リスト表示更新
-      updateRestTable();     // ←★追加：表の内容も更新
-      updateRestTriggerTable(); // ★追加
+if (rests.length) {
+  rests.forEach(r => {
+    pts.splice(pts.length-1, 0,
+      { name:'休憩', lat:r.lat, lon:r.lon, type:'via', isRest:true });
+    restList.push({
+      distance:(r.routeD/1000).toFixed(2),
+      lat:r.lat,
+      lon:r.lon,
+      trigger:r.trigger    // ★追加
+    });
+  });
+  drawList();
+  updateRestListPanel();  // 既存の縦リスト
+  updateRestTable();      // ★追加：シンプル表
+  updateRestTriggerTable(); // ★追加：トリガー別表
 
 
       // 休憩マーカー
@@ -456,12 +455,13 @@ async function makeRestPoints(feature,mass,flat){
         const dE = energyStepKJ(d,dz,mass,flat);
         acc += (basis==='time') ? t : dE;
         if(acc >= thr){
-          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
           raw.push({
-           lat:coords[i1][1],
-           lon:coords[i1][0],
-           routeD:cumDist[i1],
-           trigger:'ACCUM'   // ★追加
+  lat:coords[i1][1],
+  lon:coords[i1][0],
+  routeD:cumDist[i1],
+  trigger:'ACCUM'   // ★追加
+});
+
        });
           logRest(`[ACCUM] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
           acc=0;
@@ -483,7 +483,13 @@ async function makeRestPoints(feature,mass,flat){
         const d=st.distance||0;
         acc += d/1000;
         if(acc >= target){
-          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+          raw.push({
+  lat:coords[i1][1],
+  lon:coords[i1][0],
+  routeD:cumDist[i1],
+  trigger:'STAT'   // ★追加
+});
+
           logRest(`[STAT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
           target = mean + Math.sqrt(vari)*normal();
           acc=0;
@@ -511,7 +517,13 @@ async function makeRestPoints(feature,mass,flat){
         else passed+=dE;
         const total = metric==='distance'? totalDist : metric==='time'? totalTime : totalEnergy;
         while(passed >= stepPct*total){
-          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+          raw.push({
+  lat:coords[i1][1],
+  lon:coords[i1][0],
+  routeD:cumDist[i1],
+  trigger:'PERCENT'  // ★追加
+});
+
           logRest(`[PERCENT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
           passed = 0;
         }
@@ -841,6 +853,7 @@ function updateRestTable() {
   });
 }
 
+// ▼トリガー別テーブルを更新する関数
 function updateRestTriggerTable(){
   const tbody = document.querySelector('#restTriggerTable tbody');
   tbody.innerHTML='';
@@ -861,6 +874,7 @@ function updateRestTriggerTable(){
     tbody.appendChild(tr);
   });
 }
+
 
 
 
@@ -901,8 +915,11 @@ function updateRestTriggerTable(){
 </div>
 
 
+  
+
 </body>
 </html>
+
 
 
 
