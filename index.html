@@ -156,9 +156,6 @@ let map, pts=[], markerLayer, routeLayers={}, lastDirTs=0;
 let restList = []; // 休憩地点を保存
 let routeData = { shortest:null, fastest:null, slope:null };
 
-// ▼▼ ここに追加：休憩リスト用変数 ▼▼
-let restList = []; // 休憩地点を保存
-
 function $(id){return document.getElementById(id);}
 function formatDist(m){return (m/1000).toFixed(2)+' km';}
 function formatDur(s){const m=Math.round(s/60);return m<60? m+' 分' : (Math.floor(m/60)+' 時間 '+(m%60)+' 分');}
@@ -919,6 +916,7 @@ function updateRestTriggerTable(){
 
 </body>
 </html>
+
 
 
 
