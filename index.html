@@ -348,11 +348,17 @@ async function drawRoutes(){
        pts.splice(pts.length-1, 0,
                   { name:'休憩', lat:r.lat, lon:r.lon, type:'via', isRest:true });
         // ▼ r が有効なスコープ内で push
-        restList.push({distance:(r.routeD/1000).toFixed(2), lat:r.lat, lon:r.lon});
+        restList.push({
+       distance:(r.routeD/1000).toFixed(2),
+       lat:r.lat,
+       lon:r.lon,
+       trigger:r.trigger    // ★追加
+       });
       });
       drawList();
       updateRestListPanel(); // 休憩地点リスト表示更新
       updateRestTable();     // ←★追加：表の内容も更新
+      updateRestTriggerTable(); // ★追加
 
 
       // 休憩マーカー
@@ -451,6 +457,12 @@ async function makeRestPoints(feature,mass,flat){
         acc += (basis==='time') ? t : dE;
         if(acc >= thr){
           raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+          raw.push({
+           lat:coords[i1][1],
+           lon:coords[i1][0],
+           routeD:cumDist[i1],
+           trigger:'ACCUM'   // ★追加
+       });
           logRest(`[ACCUM] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
           acc=0;
         }
@@ -829,6 +841,28 @@ function updateRestTable() {
   });
 }
 
+function updateRestTriggerTable(){
+  const tbody = document.querySelector('#restTriggerTable tbody');
+  tbody.innerHTML='';
+  if (!restList.length) {
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td colspan="5">休憩地点はありません</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+  restList.forEach((r,i)=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML =
+      `<td>${i+1}</td>
+       <td>${r.trigger}</td>
+       <td>${r.distance}</td>
+       <td>${r.lat.toFixed(5)}</td>
+       <td>${r.lon.toFixed(5)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+
 
 </script>
 
@@ -849,8 +883,27 @@ function updateRestTable() {
   </table>
 </div>
 
+<div class="section">
+  <h3>休憩トリガー別 休憩地点一覧</h3>
+  <table id="restTriggerTable" border="1"
+         style="border-collapse:collapse;width:100%;font-size:0.9rem;">
+    <thead>
+      <tr style="background:#f0f0f0">
+        <th>#</th>
+        <th>トリガー</th>
+        <th>距離 (km)</th>
+        <th>緯度</th>
+        <th>経度</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+
 </body>
 </html>
+
 
 
 
