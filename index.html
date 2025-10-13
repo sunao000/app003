@@ -220,14 +220,15 @@ window.addEventListener('DOMContentLoaded',()=>{
     const profile = $('profileSelect').value;
     const results = [];
     for (const cmb of combos){
-      const picks = cmb.filter(Boolean);
-      const wps = [start, ...picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name || 'POI'}));
-      try {
-        const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
-        const score = comboScore(stats);
-        results.push({ score, feature, picks, stats });
-      } catch(e){ console.warn('combo route fail', e); }
-    }
+  const picks = cmb.filter(Boolean); // 実際に採用されたPOI（nullは除外）
+  const wps = [start, ...picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name || 'POI'}));
+  try {
+    const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
+    const score = comboScore(stats);
+    results.push({ score, feature, picks, picksByTrigger: cmb, stats });
+  } catch(e){ console.warn('combo route fail', e); }
+}
+
 
     results.sort((a,b)=>a.score-b.score);
     showTop3Combos(results.slice(0,3));
@@ -925,43 +926,107 @@ function updateRestPoiPanel(){
 function showTop3Combos(resultList){
   const box = document.getElementById('comboTop3');
   box.innerHTML = '';
-  if (!resultList.length){ box.textContent = '候補がありません（休憩トリガーやPOIが不足）'; return; }
+  if (!resultList.length){
+    box.textContent = '候補がありません（休憩トリガーやPOIが不足）';
+    return;
+  }
+
+  // 小ヘルパ
+  const sd = (a)=>{ if(!a.length) return 0;
+    const m=a.reduce((x,y)=>x+y,0)/a.length;
+    return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length);
+  };
+  const fmt = (n)=>Number(n).toFixed(5);
 
   resultList.slice(0,3).forEach((r, idx) => {
+    const rank = idx+1;
+
+    // カード枠
     const wrap = document.createElement('div');
-    wrap.style.border='1px solid #ddd'; wrap.style.borderRadius='8px';
-    wrap.style.padding='8px'; wrap.style.marginBottom='8px';
-    const rank=idx+1;
+    wrap.style.border='1px solid #ddd';
+    wrap.style.borderRadius='8px';
+    wrap.style.padding='8px';
+    wrap.style.marginBottom='8px';
 
-    const sd = (a)=>{ if(!a.length) return 0; const m=a.reduce((x,y)=>x+y,0)/a.length;
-      return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length); };
-
-    wrap.innerHTML = `
-      <div style="font-weight:700;margin-bottom:4px">#${rank}　スコア（σ合計）: ${ (sd(r.stats.dist)+sd(r.stats.time)+sd(r.stats.energy)).toFixed(3) }</div>
-      <div>レグ数: ${r.stats.dist.length}</div>
+    // ヘッダ（スコア＆σ内訳）
+    const header = document.createElement('div');
+    header.innerHTML = `
+      <div style="font-weight:700;margin-bottom:4px">
+        #${rank}　スコア（σ合計）: ${(sd(r.stats.dist)+sd(r.stats.time)+sd(r.stats.energy)).toFixed(3)}
+      </div>
       <div style="margin-top:4px">
         距離σ=${sd(r.stats.dist).toFixed(2)} km　
         時間σ=${sd(r.stats.time).toFixed(2)} 分　
         エネルギーσ=${sd(r.stats.energy).toFixed(2)} kJ
       </div>
-      <details style="margin-top:6px">
-        <summary>採用した休憩地点（順路）</summary>
-        <ol style="margin:4px 0 0 1.1rem;font-size:0.9rem">
-          ${r.picks.map(p=>`<li>${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}</li>`).join('')}
-        </ol>
-      </details>
-      <div style="margin-top:6px"><button class="drawComboBtn">このルートを表示</button></div>
     `;
-    wrap.querySelector('.drawComboBtn').onclick = () => {
+    wrap.appendChild(header);
+
+    // 採用休憩地点（トリガーごと）一覧
+    const list = document.createElement('div');
+    list.style.marginTop = '8px';
+    list.innerHTML = `<div style="font-weight:600;margin-bottom:4px">採用した休憩地点（トリガーごと）</div>`;
+    const ol = document.createElement('ol');
+    ol.style.margin = '4px 0 0 1.1rem';
+    ol.style.fontSize = '0.92rem';
+
+    // restGroups（トリガー情報）と picksByTrigger（各トリガーで採用/不採用のPOI）を突き合わせて表示
+    (restGroups || []).forEach((g, i) => {
+      const li = document.createElement('li');
+      const km = ((g?.rest?.routeD || 0) / 1000).toFixed(2);
+      const head = document.createElement('div');
+      head.innerHTML = `<b>休憩トリガー＃${i+1}</b>　<span style="color:#666">${km} km地点</span>
+        <small>(${fmt(g?.rest?.lat||0)}, ${fmt(g?.rest?.lon||0)})</small>`;
+      li.appendChild(head);
+
+      // 採用されたPOI（nullなら「未採用」）
+      const chosen = (r.picksByTrigger && r.picksByTrigger[i]) ? r.picksByTrigger[i] : null;
+      const ul = document.createElement('ul');
+      ul.style.listStyle='none'; ul.style.margin='4px 0 0'; ul.style.padding='0';
+
+      const row = document.createElement('li');
+      row.style.padding='2px 0';
+
+      if (chosen){
+        // 行クリックで地図フォーカス
+        row.style.cursor='pointer';
+        row.textContent = `・${chosen.name}　${fmt(chosen.lat)}　${fmt(chosen.lon)}`;
+        row.onclick = () => {
+          map.flyTo([chosen.lat, chosen.lon], 17);
+          L.popup().setLatLng([chosen.lat, chosen.lon]).setContent(chosen.name).openOn(map);
+        };
+      }else{
+        row.textContent = '・（このトリガーでは休憩地点を採用しない組み合わせ）';
+        row.style.color = '#777';
+      }
+
+      ul.appendChild(row);
+      li.appendChild(ul);
+      ol.appendChild(li);
+    });
+
+    list.appendChild(ol);
+    wrap.appendChild(list);
+
+    // このルートを表示ボタン
+    const btnWrap = document.createElement('div');
+    btnWrap.style.marginTop='8px';
+    const btn = document.createElement('button');
+    btn.textContent = 'このルートを表示';
+    btn.onclick = () => {
       clearRouteLayers();
       const color = '#00aa88';
       routeLayers['combo#'+rank] = L.geoJSON(r.feature, { style:{ color, weight: 7 } }).addTo(map);
       map.fitBounds(routeLayers['combo#'+rank].getBounds().pad(0.1));
       setActiveButton(null);
     };
+    btnWrap.appendChild(btn);
+    wrap.appendChild(btnWrap);
+
     box.appendChild(wrap);
   });
 }
+
 
 
 /* ===== 組み合わせルート探索＆評価ユーティリティ ===== */
@@ -1001,5 +1066,6 @@ async function routeLegStatsForWaypoints(wps, profile){
 </script>
 </body>
 </html>
+
 
 
