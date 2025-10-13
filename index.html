@@ -34,7 +34,9 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   <input id="placeInput" placeholder="地名・住所" style="width:260px">
   <button id="searchBtn">検索</button>
   <button id="locBtn">現在地追加</button>
-  <button id="drawBtn">ルート計算</button>
+  <button id="drawBtn">休憩場所検索</button>
+  <button id="solveCombBtn">ルート検索</button>
+
 
   <label>プロファイル
     <select id="profileSelect">
@@ -146,6 +148,13 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   <div id="legSummaryAll" style="font-size:0.9rem;"></div>
 </div>
 
+<!-- 組み合わせ評価：上位3件 -->
+<div class="section">
+  <h3>最適な休憩組み合わせ（上位3件）</h3>
+  <div id="comboTop3" style="font-size:0.9rem;"></div>
+</div>
+
+
 <!-- グラフ描画＆ダウンロード -->
 <div id="charts" style="display:none;">
   <canvas id="energyChart"></canvas>
@@ -191,6 +200,43 @@ window.addEventListener('DOMContentLoaded',()=>{
       p=>addPoint({name:'現在地',lat:p.coords.latitude,lon:p.coords.longitude}),
       ()=>alert('現在地取得失敗'));
   $('drawBtn').onclick=drawRoutes;
+
+  $('solveCombBtn').onclick = async () => {
+  try {
+    if (!routeData.fastest){ alert('先に「休憩場所検索」を実行してください。'); return; }
+    if (!Array.isArray(restGroups) || !restGroups.length){ alert('休憩トリガーがありません。'); return; }
+
+    const poiGroups = restGroups.map(g => Array.isArray(g.pois) ? g.pois : []);
+    if (poiGroups.every(a => !a.length)){ alert('各休憩トリガーにPOIがありません。POI設定を見直してください。'); return; }
+
+    const perGroupLimit = Math.max(1, Math.min(3, Number($('poiLimit').value)||3));
+    const combos = enumerateCombinations(poiGroups, perGroupLimit, 60);
+    if (!combos.length){ alert('組み合わせ候補が作れませんでした。'); return; }
+
+    const start = pts.find(p=>p.type==='start') || pts[0];
+    const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
+    if (!start || !goal){ alert('スタート/ゴールが見つかりません。'); return; }
+
+    const profile = $('profileSelect').value;
+    const results = [];
+    for (const cmb of combos){
+      const picks = cmb.filter(Boolean);
+      const wps = [start, ...picks, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name || 'POI'}));
+      try {
+        const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
+        const score = comboScore(stats);
+        results.push({ score, feature, picks, stats });
+      } catch(e){ console.warn('combo route fail', e); }
+    }
+
+    results.sort((a,b)=>a.score-b.score);
+    showTop3Combos(results.slice(0,3));
+  } catch (err){
+    console.error(err);
+    alert('組み合わせ探索でエラー: ' + (err.message || err));
+  }
+};
+
 
   new Sortable($('pointList'),{
     animation:150,
@@ -876,8 +922,84 @@ function updateRestPoiPanel(){
   });
 }
 
+function showTop3Combos(resultList){
+  const box = document.getElementById('comboTop3');
+  box.innerHTML = '';
+  if (!resultList.length){ box.textContent = '候補がありません（休憩トリガーやPOIが不足）'; return; }
+
+  resultList.slice(0,3).forEach((r, idx) => {
+    const wrap = document.createElement('div');
+    wrap.style.border='1px solid #ddd'; wrap.style.borderRadius='8px';
+    wrap.style.padding='8px'; wrap.style.marginBottom='8px';
+    const rank=idx+1;
+
+    const sd = (a)=>{ if(!a.length) return 0; const m=a.reduce((x,y)=>x+y,0)/a.length;
+      return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length); };
+
+    wrap.innerHTML = `
+      <div style="font-weight:700;margin-bottom:4px">#${rank}　スコア（σ合計）: ${ (sd(r.stats.dist)+sd(r.stats.time)+sd(r.stats.energy)).toFixed(3) }</div>
+      <div>レグ数: ${r.stats.dist.length}</div>
+      <div style="margin-top:4px">
+        距離σ=${sd(r.stats.dist).toFixed(2)} km　
+        時間σ=${sd(r.stats.time).toFixed(2)} 分　
+        エネルギーσ=${sd(r.stats.energy).toFixed(2)} kJ
+      </div>
+      <details style="margin-top:6px">
+        <summary>採用した休憩地点（順路）</summary>
+        <ol style="margin:4px 0 0 1.1rem;font-size:0.9rem">
+          ${r.picks.map(p=>`<li>${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}</li>`).join('')}
+        </ol>
+      </details>
+      <div style="margin-top:6px"><button class="drawComboBtn">このルートを表示</button></div>
+    `;
+    wrap.querySelector('.drawComboBtn').onclick = () => {
+      clearRouteLayers();
+      const color = '#00aa88';
+      routeLayers['combo#'+rank] = L.geoJSON(r.feature, { style:{ color, weight: 7 } }).addTo(map);
+      map.fitBounds(routeLayers['combo#'+rank].getBounds().pad(0.1));
+      setActiveButton(null);
+    };
+    box.appendChild(wrap);
+  });
+}
+
+
+/* ===== 組み合わせルート探索＆評価ユーティリティ ===== */
+
+// 休憩トリガーごとに1地点ずつ選ぶ全組み合わせを列挙（上限あり）
+function enumerateCombinations(poiGroups, perGroupLimit = 3, hardCap = 60){
+  const groups = poiGroups.map(arr => (arr || []).slice(0, perGroupLimit));
+  const combos = [];
+  function dfs(i, acc){
+    if (combos.length >= hardCap) return;
+    if (i === groups.length){ combos.push(acc.slice()); return; }
+    const g = groups[i];
+    if (!g.length){ acc.push(null); dfs(i+1, acc); acc.pop(); return; }
+    for (const p of g){ if (combos.length >= hardCap) break; acc.push(p); dfs(i+1, acc); acc.pop(); }
+  }
+  dfs(0, []);
+  return combos;
+}
+
+// スコア（小さいほど良い）：距離/時間/エネルギーの標準偏差の合計
+function comboScore(legStats){
+  const sd = (a)=>{ if(!a.length) return 0; const m=a.reduce((x,y)=>x+y,0)/a.length; 
+    return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length); };
+  return sd(legStats.dist)+sd(legStats.time)+sd(legStats.energy);
+}
+
+// 組み合わせルートのレグ統計を取得（ORS呼び出し）
+async function routeLegStatsForWaypoints(wps, profile){
+  const body = { coordinates: wps.map(p=>[p.lon,p.lat]), elevation:true, extra_info:['steepness'], preference:'fastest' };
+  const feature = (await dir(body, profile)).features[0];
+  const mass=75, flat=18;
+  const stats = await calcLegStats(feature, mass, flat);
+  return { feature, stats };
+}
+
 
 </script>
 </body>
 </html>
+
 
