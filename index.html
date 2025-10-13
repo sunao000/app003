@@ -113,6 +113,15 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </details>
 </div>
 
+<!-- 休憩トリガー別の候補POI -->
+<div class="section">
+  <details open>
+    <summary>休憩トリガー別の候補POI</summary>
+    <ol id="restPoiPanel" style="margin:0;padding-left:1.1rem;font-size:0.9rem"></ol>
+  </details>
+</div>
+
+
 
 <!-- 地点リストと地図 -->
 <ul id="pointList"></ul>
@@ -153,8 +162,12 @@ const ORS_ROOT = 'https://api.openrouteservice.org';
 
 /* ====== ヘルパ ====== */
 let map, pts=[], markerLayer, routeLayers={}, lastDirTs=0;
-let restList = []; // 休憩地点を保存
 let routeData = { shortest:null, fastest:null, slope:null };
+
+// ▼▼ ここに追加：休憩リスト用変数 ▼▼
+let restList = []; // 休憩地点を保存
+let restGroups = []; 
+
 
 function $(id){return document.getElementById(id);}
 function formatDist(m){return (m/1000).toFixed(2)+' km';}
@@ -337,25 +350,20 @@ async function drawRoutes(){
     const mass = 75; // 体重+バイク質量(例)
     const flat = 18; // 平坦係数
     const rests = await makeRestPoints(routeData.fastest, mass, flat);
+    restGroups = (rests || []).map(r => ({ rest: r, pois: [] }));
 
     restList = []; // 前回のリストをリセット
 
-if (rests.length) {
-  rests.forEach(r => {
-    pts.splice(pts.length-1, 0,
-      { name:'休憩', lat:r.lat, lon:r.lon, type:'via', isRest:true });
-    restList.push({
-      distance:(r.routeD/1000).toFixed(2),
-      lat:r.lat,
-      lon:r.lon,
-      trigger:r.trigger    // ★追加
-    });
-  });
-  drawList();
-  updateRestListPanel();  // 既存の縦リスト
-  updateRestTable();      // ★追加：シンプル表
-  updateRestTriggerTable(); // ★追加：トリガー別表
-}
+    if (rests.length) {
+      // リストに挿入（ゴール直前）
+     rests.forEach(r => {
+       pts.splice(pts.length-1, 0,
+                  { name:'休憩', lat:r.lat, lon:r.lon, type:'via', isRest:true });
+        // ▼ r が有効なスコープ内で push
+        restList.push({distance:(r.routeD/1000).toFixed(2), lat:r.lat, lon:r.lon});
+      });
+      drawList();
+      updateRestListPanel(); // 休憩地点リスト表示更新
 
       // 休憩マーカー
       for (const r of rests) {
@@ -369,28 +377,39 @@ if (rests.length) {
       }
 
       // POI検索（半径固定・近い順に n 件）
-      if ($('poiToggle').checked) {
-        const baseRadius = Number($('poiRadius').value) || 50000;
-        const limit = Math.max(1, Number($('poiLimit').value) || 5);
-        for (const r of rests) {
-          try {
-            const pois = await fetchPoisAround(r.lat, r.lon, baseRadius, limit);
-            logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 半径${baseRadius}m → ${pois.length}件（近い順）`);
-            pois.forEach(po => {
-              L.marker([po.lat, po.lon], {
-                icon: new L.Icon({
-                  iconUrl: 'https://maps.gstatic.com/mapfiles/ms2/micons/purple.png',
-                  iconSize: [24, 24],
-                  iconAnchor: [12, 24]
-                })
-              }).bindTooltip(po.name).addTo(markerLayer);
-            });
-          } catch (e) {
-            logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 取得失敗`);
-          }
-        }
-      }
-    
+if ($('poiToggle').checked) {
+  const baseRadius = Number($('poiRadius').value) || 50000;
+  const limit = Math.max(1, Number($('poiLimit').value) || 5);
+
+  for (let idx = 0; idx < rests.length; idx++) {
+    const r = rests[idx];
+    try {
+      const pois = await fetchPoisAround(r.lat, r.lon, baseRadius, limit);
+      logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 半径${baseRadius}m → ${pois.length}件（近い順）`);
+
+      // ▼ 追加：この休憩トリガーのPOIを保存
+      if (restGroups[idx]) restGroups[idx].pois = pois;
+
+      // 既存：マップに描画
+      pois.forEach(po => {
+        L.marker([po.lat, po.lon], {
+          icon: new L.Icon({
+            iconUrl: 'https://maps.gstatic.com/mapfiles/ms2/micons/purple.png',
+            iconSize: [24, 24],
+            iconAnchor: [12, 24]
+          })
+        }).bindTooltip(po.name).addTo(markerLayer);
+      });
+    } catch (e) {
+      logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 取得失敗`);
+    }
+  }
+
+  // ▼ 追加：パネルへ反映
+  updateRestPoiPanel();
+}
+
+    }
 
     // デフォルト表示は最速
     showSingleRoute('fastest', true);
@@ -428,129 +447,88 @@ async function totalEnergyKJ(feature,mass,flat){
   }
   return tot;
 }
-// 休憩ポイントをトリガー別に検出する関数
-async function makeRestPoints(feature, mass, flat) {
-  const coords = feature.geometry.coordinates;
-  const segs   = feature.properties.segments || [];
-  const hasEle = coords[0].length >= 3;
-  const cumDist = [0];
-
-  // 区間ごとの累積距離(m)
-  for (let i = 1; i < coords.length; i++) {
-    cumDist[i] = cumDist[i - 1] + L.latLng(
-      coords[i][1], coords[i][0]
-    ).distanceTo([coords[i - 1][1], coords[i - 1][0]]);
+async function makeRestPoints(feature,mass,flat){
+  const coords=feature.geometry.coordinates;
+  const segs=(feature.properties.segments||[]);
+  const hasEle = coords[0].length>=3;
+  const cumDist=[0];
+  for(let i=1;i<coords.length;i++){
+    cumDist[i]=cumDist[i-1]+L.latLng(coords[i][1],coords[i][0]).distanceTo([coords[i-1][1],coords[i-1][0]]);
   }
 
-  const basis = $('restBasis').value;
-  const thr   = (basis === 'time')
-                  ? Number($('restMinutes').value) * 60
-                  : Number($('restKJ').value);
+  const basis=$('restBasis').value;
+  const thr=basis==='time' ? Number($('restMinutes').value)*60 : Number($('restKJ').value);
+  let raw=[];
 
-  let raw = [];
-
-  // -------- 積算トリガ --------
-  if ($('optAccum').checked) {
-    let acc = 0;
-    for (const s of segs) {
-      for (const st of s.steps || []) {
-        const [i0, i1] = st.way_points || [0, 0];
-        const d  = st.distance || 0;
-        const t  = st.duration || 0;
-        const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
-        const dE = energyStepKJ(d, dz, mass, flat);
-        acc += (basis === 'time') ? t : dE;
-
-        if (acc >= thr) {
-          raw.push({
-            lat: coords[i1][1],
-            lon: coords[i1][0],
-            routeD: cumDist[i1],
-            trigger: 'ACCUM'  // 積算トリガ
-          });
-          logRest(`[ACCUM] ${(cumDist[i1] / 1000).toFixed(2)} km → HIT`);
-          acc = 0;
+  // 積算トリガ
+  if($('optAccum').checked){
+    let acc=0;
+    for(const s of segs){
+      for(const st of s.steps||[]){
+        const [i0,i1]=st.way_points||[0,0];
+        const d=st.distance||0, t=st.duration||0;
+        const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
+        const dE = energyStepKJ(d,dz,mass,flat);
+        acc += (basis==='time') ? t : dE;
+        if(acc >= thr){
+          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+          logRest(`[ACCUM] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
+          acc=0;
         }
       }
     }
   }
 
-  // -------- 統計トリガ --------
-  if ($('optStatTrigger').checked) {
-    const mean = Number($('statMean').value);
-    const vari = Number($('statVar').value);
-    const rng = () => Math.random();
-    const normal = () => Math.sqrt(-2 * Math.log(rng())) * Math.cos(2 * Math.PI * rng());
-
-    let target = mean + Math.sqrt(vari) * normal();
-    let acc = 0;
-
-    for (const s of segs) {
-      for (const st of s.steps || []) {
-        const [i0, i1] = st.way_points || [0, 0];
-        const d = st.distance || 0;
-        acc += d / 1000; // km換算
-
-        if (acc >= target) {
-          raw.push({
-            lat: coords[i1][1],
-            lon: coords[i1][0],
-            routeD: cumDist[i1],
-            trigger: 'STAT'  // 統計トリガ
-          });
-          logRest(`[STAT] ${(cumDist[i1] / 1000).toFixed(2)} km → HIT`);
-          target = mean + Math.sqrt(vari) * normal();
-          acc = 0;
+  // 統計トリガ
+  if($('optStatTrigger').checked){
+    const mean=Number($('statMean').value), vari=Number($('statVar').value);
+    const rng=()=>Math.random();
+    const normal=()=>Math.sqrt(-2*Math.log(rng()))*Math.cos(2*Math.PI*rng());
+    let target=mean + Math.sqrt(vari)*normal();
+    let acc=0;
+    for(const s of segs){
+      for(const st of s.steps||[]){
+        const [i0,i1]=st.way_points||[0,0];
+        const d=st.distance||0;
+        acc += d/1000;
+        if(acc >= target){
+          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+          logRest(`[STAT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
+          target = mean + Math.sqrt(vari)*normal();
+          acc=0;
         }
       }
     }
   }
 
-  // -------- 割合トリガ --------
-  if ($('optPercentTrigger').checked) {
-    const stepPct = Number($('percentStep').value) / 100;
-    const metric  = $('percentMetric').value;
-    const totalDist   = feature.properties.summary.distance;
-    const totalTime   = feature.properties.summary.duration;
-    const totalEnergy = await totalEnergyKJ(feature, mass, flat);
-
-    let passed = 0;
-
-    for (const s of segs) {
-      for (const st of s.steps || []) {
-        const [i0, i1] = st.way_points || [0, 0];
-        const d  = st.distance || 0;
-        const t  = st.duration || 0;
-        const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
-        const dE = energyStepKJ(d, dz, mass, flat);
-
-        if (metric === 'distance') passed += d;
-        else if (metric === 'time') passed += t;
-        else passed += dE;
-
-        const total = (metric === 'distance')
-                        ? totalDist
-                        : (metric === 'time')
-                          ? totalTime
-                          : totalEnergy;
-
-        while (passed >= stepPct * total) {
-          raw.push({
-            lat: coords[i1][1],
-            lon: coords[i1][0],
-            routeD: cumDist[i1],
-            trigger: 'PERCENT'  // 割合トリガ
-          });
-          logRest(`[PERCENT] ${(cumDist[i1] / 1000).toFixed(2)} km → HIT`);
+  // 割合トリガ
+  if($('optPercentTrigger').checked){
+    const stepPct=Number($('percentStep').value)/100;
+    const metric=$('percentMetric').value;
+    const totalDist = feature.properties.summary.distance;
+    const totalTime = feature.properties.summary.duration;
+    const totalEnergy = await totalEnergyKJ(feature,mass,flat);
+    let passed=0;
+    for(const s of segs){
+      for(const st of s.steps||[]){
+        const [i0,i1]=st.way_points||[0,0];
+        const d=st.distance||0,t=st.duration||0;
+        const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
+        const dE = energyStepKJ(d,dz,mass,flat);
+        if(metric==='distance') passed+=d;
+        else if(metric==='time') passed+=t;
+        else passed+=dE;
+        const total = metric==='distance'? totalDist : metric==='time'? totalTime : totalEnergy;
+        while(passed >= stepPct*total){
+          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+          logRest(`[PERCENT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
           passed = 0;
         }
       }
     }
   }
-
   return raw;
 }
-
 
 /* ===== 区間統計（各ルート） ===== */
 async function calcLegStats(feature, mass, flat){
@@ -851,92 +829,55 @@ function updateRestListPanel(){
   });
 }
 
-// 休憩地点一覧（距離・座標）
-function updateRestTable() {
-  const tbody = document.querySelector('#restTable tbody');
-  tbody.innerHTML = '';
-  if (!restList.length) {
-    tbody.innerHTML = '<tr><td colspan="4">休憩地点はありません</td></tr>';
+function updateRestPoiPanel(){
+  const ol = document.getElementById('restPoiPanel');
+  if (!ol) return;
+  ol.innerHTML = '';
+
+  if (!restGroups.length){
+    const li = document.createElement('li');
+    li.textContent = '休憩トリガーはありません';
+    ol.appendChild(li);
     return;
   }
-  restList.forEach((r,i)=>{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${i+1}</td>
-      <td>${r.distance}</td>
-      <td>${r.lat.toFixed(5)}</td>
-      <td>${r.lon.toFixed(5)}</td>`;
-    tbody.appendChild(tr);
+
+  restGroups.forEach((g, i) => {
+    const li = document.createElement('li');
+    li.style.margin = '6px 0';
+
+    // 見出し：休憩トリガー#N（km地点 / 緯度経度）
+    const km = (g.rest?.routeD ?? 0) / 1000;
+    const head = document.createElement('div');
+    head.innerHTML = `<b>休憩トリガー＃${i+1}</b>　<span style="color:#666">${km.toFixed(2)} km地点</span>
+      <small>(${(g.rest?.lat ?? 0).toFixed(5)}, ${(g.rest?.lon ?? 0).toFixed(5)})</small>`;
+    li.appendChild(head);
+
+    // 候補POIのUL
+    const ul = document.createElement('ul');
+    ul.style.listStyle = 'none';
+    ul.style.margin = '4px 0 0';
+    ul.style.padding = '0';
+
+    if (!g.pois?.length){
+      const x = document.createElement('li');
+      x.textContent = '・（候補なし）';
+      ul.appendChild(x);
+    } else {
+      g.pois.forEach((p) => {
+        const it = document.createElement('li');
+        it.style.padding = '2px 0';
+        it.textContent = `・${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}`;
+        ul.appendChild(it);
+      });
+    }
+
+    li.appendChild(ul);
+    ol.appendChild(li);
   });
 }
-
-// 休憩トリガー別一覧
-function updateRestTriggerTable(){
-  const tbody = document.querySelector('#restTriggerTable tbody');
-  tbody.innerHTML = '';
-  if (!restList.length) {
-    tbody.innerHTML = '<tr><td colspan="5">休憩地点はありません</td></tr>';
-    return;
-  }
-  restList.forEach((r,i)=>{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${i+1}</td>
-      <td>${r.trigger}</td>
-      <td>${r.distance}</td>
-      <td>${r.lat.toFixed(5)}</td>
-      <td>${r.lon.toFixed(5)}</td>`;
-    tbody.appendChild(tr);
-  });
-}
-
-
-
 
 
 </script>
-
-<!-- ▼ 休憩地点テーブル ▼ -->
-<div class="section">
-  <h3>休憩地点一覧（表）</h3>
-  <table id="restTable" border="1"
-         style="border-collapse:collapse;width:100%;font-size:0.9rem;">
-    <thead>
-      <tr style="background:#f0f0f0">
-        <th>#</th><th>距離 (km)</th><th>緯度</th><th>経度</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
-</div>
-
-<div class="section">
-  <h3>休憩トリガー別 休憩地点一覧</h3>
-  <table id="restTriggerTable" border="1"
-         style="border-collapse:collapse;width:100%;font-size:0.9rem;">
-    <thead>
-      <tr style="background:#f0f0f0">
-        <th>#</th><th>トリガー</th><th>距離 (km)</th><th>緯度</th><th>経度</th>
-      </tr>
-    </thead>
-    <tbody></tbody>
-  </table>
-</div>
-
-
-
-  
-
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
 
