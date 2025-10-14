@@ -246,21 +246,35 @@ window.addEventListener('DOMContentLoaded',()=>{
 
     // 2) アルゴリズム分岐
     if (algo === 'greedy'){
-      // --- 等間隔貪欲（ゼロAPI） ---
-      // 各トリガーの累積距離ターゲットに最も近いPOIを選ぶ
-      const picksByTrigger = chooseGreedy(restGroups, cumTotals);
-      // 累積の差分から区間距離/時間/エネを近似評価
-      const ev = evalByCums(restGroups, picksByTrigger, cumTotals);
-      // 表示用フォーマットに変換
-      const results = [{
-        score: ev.score,
-        stats: ev.stats,
-        picks: picksByTrigger.filter(Boolean), // 実採用POIだけ（null除外）
-        picksByTrigger                           // トリガー順（null許容）
-      }];
-      showTop3Combos(results);
-      return;
-    }
+  // 等間隔ターゲットに近い「上位K候補」を各トリガーから集める
+  const K = 3; // ここを2～5で調整可
+  const candGroups = greedyTopKCandidates(restGroups, cumTotals, K);
+
+  // 直積（上限をかけて暴走防止）
+  const combos = enumerateCombinations(candGroups, /*perGroupLimit=*/K, /*hardCap=*/60);
+  if (!combos.length){
+    alert('組み合わせ候補が作れませんでした（候補不足）。');
+    return;
+  }
+
+  // 全候補を「累積差分の近似評価」で採点（ゼロAPI）
+  const scored = combos.map(cmb => {
+    const picksByTrigger = cmb; // null含む（未採用も許容）
+    const ev = evalByCums(restGroups, picksByTrigger, cumTotals); // dist/time/energy のσ合計でスコア
+    return {
+      score: ev.score,
+      stats: ev.stats,
+      picksByTrigger,
+      picks: picksByTrigger.filter(Boolean) // 表示用に null 除去
+    };
+  });
+
+  // スコア昇順で上位3件を表示
+  scored.sort((a,b)=>a.score-b.score);
+  showTop3Combos(scored.slice(0,3));
+  return;
+}
+
 
     if (algo === 'beam3'){
       // --- ビームサーチ（幅3・ゼロAPI） ---
@@ -1350,11 +1364,43 @@ function beamSearch(restGroups, cumTotals, width=3){
   return final.slice(0,3);
 }
 
+// 各トリガー t に対して、等間隔ターゲット (cumTotals.D * (t+1)/(R+1)) に近い順に上位K候補を返す（ゼロAPI）
+function greedyTopKCandidates(restGroups, cumTotals, K = 3){
+  const R = restGroups.length;
+  const groups = [];
+
+  for (let t = 0; t < R; t++){
+    const g = restGroups[t];
+    const target = cumTotals.D * (t+1) / (R+1); // m（距離基準）
+    const pois = (g && Array.isArray(g.pois)) ? g.pois : [];
+
+    if (!pois.length){
+      // 候補が無いトリガーは null 1件で占位（未採用を意味）
+      groups.push([null]);
+      continue;
+    }
+
+    // _proj.cumD（ルート上の累積距離）からターゲットに近い順に並べる
+    const ranked = pois
+      .filter(p => p && p._proj && Number.isFinite(p._proj.cumD))
+      .map(p => ({ p, diff: Math.abs(p._proj.cumD - target) }))
+      .sort((a,b) => a.diff - b.diff)
+      .slice(0, K)
+      .map(x => x.p); // POIだけに戻す
+
+    // 念のため空振り対策
+    groups.push(ranked.length ? ranked : [null]);
+  }
+  return groups; // 形式: [ [poi|null,...(<=K)], [ ... ], ... ]
+}
+
+
 
 
 </script>
 </body>
 </html>
+
 
 
 
