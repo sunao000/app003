@@ -1100,13 +1100,69 @@ function showTop3Combos(resultList){
     btnWrap.style.marginTop='8px';
     const btn = document.createElement('button');
     btn.textContent = 'このルートを表示';
-    btn.onclick = () => {
-      clearRouteLayers();
-      const color = '#00aa88';
-      routeLayers['combo#'+rank] = L.geoJSON(r.feature, { style:{ color, weight: 7 } }).addTo(map);
-      map.fitBounds(routeLayers['combo#'+rank].getBounds().pad(0.1));
-      setActiveButton(null);
-    };
+    btn.onclick = async () => {
+  // ボタン連打防止
+  btn.disabled = true;
+  btn.textContent = 'ルート生成中...';
+
+  try {
+    // 1) ルートGeoJSON（feature）を用意
+    let feature = r.feature;
+
+    // 「ビーム/貪欲」などゼロAPI結果の場合は feature が無いので、ここで1回だけORSへ
+    if (!feature) {
+      const start = pts.find(p=>p.type==='start') || pts[0];
+      const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
+      if (!start || !goal) { alert('スタート/ゴールが見つかりません。'); return; }
+
+      // トリガー順で採用POIを取得（picksByTrigger が無ければ picks を使う）
+      const picksArray = (r.picksByTrigger && Array.isArray(r.picksByTrigger))
+        ? r.picksByTrigger.filter(Boolean)
+        : (r.picks || []);
+
+      // ウェイポイント列を組み立て
+      const wps = [start, ...picksArray, goal].map(p=>({
+        lat: p.lat, lon: p.lon, name: p.name || 'POI'
+      }));
+
+      // ORSプロフィール
+      const profile = $('profileSelect').value;
+
+      // 既存の関数を利用して1回だけルート生成
+      const out = await routeLegStatsForWaypoints(wps, profile);
+      feature = out.feature; // 以降で描画に使う
+    }
+
+    if (!feature) {
+      alert('ルートを生成できませんでした。');
+      return;
+    }
+
+    // 2) 既存ルートをクリアして描画
+    clearRouteLayers();
+    const color = '#00aa88';
+    const layer = L.geoJSON(feature, { style:{ color, weight: 7 } }).addTo(map);
+    routeLayers['combo#'+rank] = layer;
+
+    // 3) 安全にズーム（空境界対策）
+    if (layer.getBounds && layer.getBounds().isValid && layer.getBounds().isValid()) {
+      map.fitBounds(layer.getBounds().pad(0.1));
+    } else {
+      // フォールバック：採用POI or スタート地点へ
+      const fallback = (r.picks && r.picks[0]) || pts[0];
+      if (fallback) map.flyTo([fallback.lat, fallback.lon], 14);
+    }
+
+    setActiveButton(null);
+  } catch (e) {
+    console.error(e);
+    alert('ルート描画でエラー: ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'このルートを表示';
+  }
+};
+
     btnWrap.appendChild(btn);
     wrap.appendChild(btnWrap);
 
@@ -1257,6 +1313,7 @@ function beamSearch(restGroups, cumTotals, width=3){
 </script>
 </body>
 </html>
+
 
 
 
