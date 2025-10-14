@@ -279,10 +279,11 @@ window.addEventListener('DOMContentLoaded',()=>{
     if (algo === 'beam3'){
       // --- ビームサーチ（幅3・ゼロAPI） ---
       // 各段（トリガー）で上位3つの部分解のみを保持して前進
-      const top = beamSearch(restGroups, cumTotals, 3);
-      // 表示用：便宜として picks を実採用配列にしておく
-      top.forEach(t => t.picks = t.picksByTrigger.filter(Boolean));
-      showTop3Combos(top);
+      // 幅=3, 最低1カ所採用, 未採用にペナルティ
+  const top = beamSearch(restGroups, cumTotals, 3, 1, 1e6);
+  // 表示用に null を除いた配列も付けておく
+  top.forEach(t => t.picks = t.picksByTrigger.filter(Boolean));
+  showTop3Combos(top);
       return;
     }
 
@@ -1361,36 +1362,60 @@ function evalByCums(restGroups, picksByTrigger, cumTotals){
 }
 
 
-// ビームサーチ（幅3）
-function beamSearch(restGroups, cumTotals, width=3){
-  let beams=[{ picks:[], score:0 }];
+// ビームサーチ（ゼロAPI）: 最低採用数の制約 + 未採用ペナルティに対応
+function beamSearch(restGroups, cumTotals, width=3, minRest=1, nullPenalty=1e6){
+  // beams 要素: { picks: [...(p or null)], score, pickedCount }
+  let beams = [{ picks: [], score: 0, pickedCount: 0 }];
 
-  for (let i=0; i<restGroups.length; i++){
-    const next=[];
-    // ★ _proj.cumD を持つPOIだけを候補に（なければ null で占位）
-    const raw = restGroups[i]?.pois || [];
-    const cand = raw
-      .filter(p => p && p._proj && Number.isFinite(p._proj.cumD))
-      .length ? raw.filter(p => p && p._proj && Number.isFinite(p._proj.cumD)) : [null];
+  for (let i = 0; i < restGroups.length; i++){
+    const g = restGroups[i];
+    // _proj.cumD を持つPOIだけを候補に。ゼロなら null 1件で占位
+    const valid = (g?.pois || []).filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+    const cand = valid.length ? valid : [null];
 
+    const next = [];
     for (const b of beams){
       for (const p of cand){
         const picks = b.picks.concat([p]);
-        const {score} = evalByCums(restGroups, picks, cumTotals);
-        next.push({ picks, score: Number.isFinite(score)? score : 0 });
+        // 近似評価（ゼロAPI）
+        const ev = evalByCums(restGroups, picks, cumTotals);
+        let s = ev.score;
+
+        // ★ 未採用に強いペナルティ（候補があるのに null を選んだ場合）
+        if (p === null && valid.length){
+          s += nullPenalty; // 例: 100万点加算→基本的に選ばれない
+        }
+
+        next.push({
+          picks,
+          score: Number.isFinite(s) ? s : 0,
+          pickedCount: b.pickedCount + (p ? 1 : 0)
+        });
       }
     }
 
+    // スコアで上位 width だけ保持
     next.sort((a,b)=>a.score-b.score);
     beams = next.slice(0, width);
   }
 
-  const final = beams.map(b=>{
+  // ★ 最低採用数の制約（デフォルト minRest=1）
+  let final = beams.filter(b => b.pickedCount >= minRest);
+
+  // もし全滅したら（全トリガーで候補が無い等）、制約を緩めてフォールバック
+  if (!final.length) final = beams;
+
+  // 最終の stats/score を整えて返す
+  final = final.map(b => {
     const ev = evalByCums(restGroups, b.picks, cumTotals);
-    return { picksByTrigger: b.picks, score: ev.score, stats: ev.stats };
+    return {
+      picksByTrigger: b.picks,
+      score: ev.score,
+      stats: ev.stats
+    };
   }).sort((a,b)=>a.score-b.score);
 
-  return final.slice(0,3);
+  return final.slice(0, 3);
 }
 
 
@@ -1430,6 +1455,7 @@ function greedyTopKCandidates(restGroups, cumTotals, K = 3){
 </script>
 </body>
 </html>
+
 
 
 
