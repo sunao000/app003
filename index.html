@@ -1304,65 +1304,95 @@ function projectToRoute(lat,lon, coords, cum){
 
 // picksByTrigger（各トリガーの選択）を累積から評価（ゼロAPI）
 function evalByCums(restGroups, picksByTrigger, cumTotals){
+  // 1) トータルのサニタイズ
+  const totalD = Number(cumTotals?.D) || 0;   // m
+  const totalT = Number(cumTotals?.T) || 0;   // s
+  const totalE = Number(cumTotals?.E) || 0;   // kJ
+
+  // 2) 区切り（cuts）作成：start(0) → 各pickの累積距離 → goal(totalD)
   const cuts = [0];
-  picksByTrigger.forEach(p=>{ if(p && p._proj) cuts.push(p._proj.cumD); });
-  cuts.push(cumTotals.D);
-  const dist=[], time=[], energy=[];
-  for(let i=1;i<cuts.length;i++){
-    const d=(cuts[i]-cuts[i-1])/1000; dist.push(d);
+  (picksByTrigger || []).forEach(p => {
+    const v = Number(p?._proj?.cumD);
+    if (Number.isFinite(v) && v > 0 && v < totalD) cuts.push(v);
+  });
+  if (totalD > 0) cuts.push(totalD);
+
+  // 3) 区間距離配列（km）
+  const dist = [];
+  if (cuts.length >= 2){
+    cuts.sort((a,b)=>a-b);
+    for (let i=1;i<cuts.length;i++){
+      const d = (Number(cuts[i]) - Number(cuts[i-1])) / 1000; // km
+      if (Number.isFinite(d) && d >= 0) dist.push(d);
+    }
   }
-  const totalD=cumTotals.D, totalT=cumTotals.T, totalE=cumTotals.E;
-  for(const d of dist){
-    const ratio=(d*1000)/totalD;
-    time.push((totalT/60)*ratio);
-    energy.push(totalE*ratio);
+
+  // 4) 区間時間/エネルギーを距離比で近似配分（分母0なら均等割り）
+  const time = [], energy = [];
+  if (dist.length){
+    if (totalD > 0 && Number.isFinite(totalD)){
+      for (const d of dist){
+        const ratio = ((d*1000) / totalD); // 0..1
+        time.push((totalT/60) * (Number.isFinite(ratio)? ratio : 0)); // 分
+        energy.push(totalE * (Number.isFinite(ratio)? ratio : 0));    // kJ
+      }
+    } else {
+      // 総距離が0/未定義でも NaN にしない：均等割りにする
+      const eqT = (totalT/60) / dist.length; // 分
+      const eqE = (totalE) / dist.length;    // kJ
+      for (let i=0;i<dist.length;i++){ time.push(eqT||0); energy.push(eqE||0); }
+    }
   }
-  const sd=a=>{ if(!a.length) return 0; const m=a.reduce((x,y)=>x+y,0)/a.length;
-    return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length); };
-  const score = sd(dist)+sd(time)+sd(energy);
-  return { stats:{dist,time,energy}, score };
+
+  // 5) NaN/∞ を弾く安全化
+  const finite = a => a.filter(x => Number.isFinite(x));
+  const distF = finite(dist), timeF = finite(time), energyF = finite(energy);
+
+  // 6) σ計算（空配列でも落ちない）
+  const sd = (a) => {
+    if (!a.length) return 0;
+    const m = a.reduce((s,v)=>s+v,0) / a.length;
+    const v = a.reduce((s,v)=>s+(v-m)*(v-m),0) / a.length;
+    return Math.sqrt(v);
+  };
+
+  const score = sd(distF) + sd(timeF) + sd(energyF);
+  return { stats: { dist: distF, time: timeF, energy: energyF }, score: Number.isFinite(score)? score : 0 };
 }
 
-// 等間隔ターゲットに最も近いPOIを貪欲に選択（距離基準）
-function chooseGreedy(restGroups, cumTotals){
-  const R=restGroups.length, picksByTrigger=[];
-  for(let k=1;k<=R;k++){
-    const target = cumTotals.D * k/(R+1);
-    const g=restGroups[k-1];
-    let best=null, bestDiff=Infinity;
-    for(const p of (g.pois||[])){
-      const val=p._proj?.cumD ?? Infinity;
-      const diff=Math.abs(val-target);
-      if(diff<bestDiff){ bestDiff=diff; best=p; }
-    }
-    picksByTrigger.push(best||null);
-  }
-  return picksByTrigger;
-}
 
 // ビームサーチ（幅3）
 function beamSearch(restGroups, cumTotals, width=3){
   let beams=[{ picks:[], score:0 }];
-  for(let i=0;i<restGroups.length;i++){
+
+  for (let i=0; i<restGroups.length; i++){
     const next=[];
-    for(const b of beams){
-      const g=restGroups[i];
-      const cand=(g.pois||[]).length ? g.pois : [null];
-      for(const p of cand){
-        const picks=b.picks.concat([p]);
-        const {score}=evalByCums(restGroups, picks, cumTotals);
-        next.push({picks, score});
+    // ★ _proj.cumD を持つPOIだけを候補に（なければ null で占位）
+    const raw = restGroups[i]?.pois || [];
+    const cand = raw
+      .filter(p => p && p._proj && Number.isFinite(p._proj.cumD))
+      .length ? raw.filter(p => p && p._proj && Number.isFinite(p._proj.cumD)) : [null];
+
+    for (const b of beams){
+      for (const p of cand){
+        const picks = b.picks.concat([p]);
+        const {score} = evalByCums(restGroups, picks, cumTotals);
+        next.push({ picks, score: Number.isFinite(score)? score : 0 });
       }
     }
+
     next.sort((a,b)=>a.score-b.score);
-    beams=next.slice(0,width);
+    beams = next.slice(0, width);
   }
-  const final=beams.map(b=>{
-    const ev=evalByCums(restGroups, b.picks, cumTotals);
-    return { picksByTrigger:b.picks, score:ev.score, stats:ev.stats };
+
+  const final = beams.map(b=>{
+    const ev = evalByCums(restGroups, b.picks, cumTotals);
+    return { picksByTrigger: b.picks, score: ev.score, stats: ev.stats };
   }).sort((a,b)=>a.score-b.score);
+
   return final.slice(0,3);
 }
+
 
 // 各トリガー t に対して、等間隔ターゲット (cumTotals.D * (t+1)/(R+1)) に近い順に上位K候補を返す（ゼロAPI）
 function greedyTopKCandidates(restGroups, cumTotals, K = 3){
@@ -1400,6 +1430,7 @@ function greedyTopKCandidates(restGroups, cumTotals, K = 3){
 </script>
 </body>
 </html>
+
 
 
 
