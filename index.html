@@ -190,6 +190,9 @@ let routeData = { shortest:null, fastest:null, slope:null };
 let restList = []; // 休憩地点を保存
 let restGroups = []; 
 
+const ICON = c=>new L.Icon({iconUrl:`https://maps.gstatic.com/mapfiles/ms2/micons/${c}-dot.png`,iconSize:[32,32],iconAnchor:[16,32]});
+const ICONS = {start:ICON('green'),via:ICON('blue'),goal:ICON('red')};
+
 
 function $(id){return document.getElementById(id);}
 function formatDist(m){return (m/1000).toFixed(2)+' km';}
@@ -428,8 +431,7 @@ async function drawRoutes(){
   if(markerLayer) map.removeLayer(markerLayer);
 
   markerLayer=L.layerGroup().addTo(map);
-  const ICON = c=>new L.Icon({iconUrl:`https://maps.gstatic.com/mapfiles/ms2/micons/${c}-dot.png`,iconSize:[32,32],iconAnchor:[16,32]});
-  const ICONS = {start:ICON('green'),via:ICON('blue'),goal:ICON('red')};
+  
   pts.forEach(p=>markerLayer.addLayer(L.marker([p.lat,p.lon],{icon:ICONS[p.type||'via']}).bindTooltip(p.name)));
 
   const coords=pts.map(p=>[p.lon,p.lat]);
@@ -1010,6 +1012,37 @@ function updateRestPoiPanel(){
   });
 }
 
+// 組み合わせ表示専用：使用地点だけピンを出す
+function setComboMarkers(start, picksArray, goal){
+  // 既存ピンをすべて消す
+  if (markerLayer) map.removeLayer(markerLayer);
+  markerLayer = L.layerGroup().addTo(map);
+
+  // スタート
+  if (start) {
+    L.marker([start.lat, start.lon], {icon:ICONS.start})
+      .bindTooltip(start.name || 'スタート').addTo(markerLayer);
+  }
+
+  // 採用POI（順路）
+  (picksArray || []).forEach((p, i) => {
+    if (!p) return;
+    L.marker([p.lat, p.lon], {
+      icon: new L.Icon({
+        iconUrl: 'https://maps.gstatic.com/mapfiles/ms2/micons/purple-dot.png',
+        iconSize:[32,32], iconAnchor:[16,32]
+      })
+    }).bindTooltip(`${p.name || '休憩'} #${i+1}`).addTo(markerLayer);
+  });
+
+  // ゴール
+  if (goal) {
+    L.marker([goal.lat, goal.lon], {icon:ICONS.goal})
+      .bindTooltip(goal.name || 'ゴール').addTo(markerLayer);
+  }
+}
+
+
 function showTop3Combos(resultList){
   const box = document.getElementById('comboTop3');
   box.innerHTML = '';
@@ -1144,7 +1177,15 @@ function showTop3Combos(resultList){
     const layer = L.geoJSON(feature, { style:{ color, weight: 7 } }).addTo(map);
     routeLayers['combo#'+rank] = layer;
 
-    // 3) 安全にズーム（空境界対策）
+    // ★ 3) 使った地点だけピンを再配置（←これが追加点）
+    const start = pts.find(p=>p.type==='start') || pts[0];
+    const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
+    const picksArray = (r.picksByTrigger && Array.isArray(r.picksByTrigger))
+      ? r.picksByTrigger.filter(Boolean)
+      : (r.picks || []);
+    setComboMarkers(start, picksArray, goal);
+
+    // 4) 安全にズーム（空境界対策）
     if (layer.getBounds && layer.getBounds().isValid && layer.getBounds().isValid()) {
       map.fitBounds(layer.getBounds().pad(0.1));
     } else {
@@ -1162,6 +1203,7 @@ function showTop3Combos(resultList){
     btn.textContent = 'このルートを表示';
   }
 };
+
 
     btnWrap.appendChild(btn);
     wrap.appendChild(btnWrap);
@@ -1313,6 +1355,7 @@ function beamSearch(restGroups, cumTotals, width=3){
 </script>
 </body>
 </html>
+
 
 
 
