@@ -193,6 +193,9 @@ let restGroups = [];
 const ICON = c=>new L.Icon({iconUrl:`https://maps.gstatic.com/mapfiles/ms2/micons/${c}-dot.png`,iconSize:[32,32],iconAnchor:[16,32]});
 const ICONS = {start:ICON('green'),via:ICON('blue'),goal:ICON('red')};
 
+const OVERPASS_MIN_INTERVAL = 1800; // 1.8s（必要なら 2000～2500 まで上げてOK）
+let __overpassLastTs = 0;
+const __overpassCache = new Map();  // key=query文字列, value=JSON
 
 function $(id){return document.getElementById(id);}
 function formatDist(m){return (m/1000).toFixed(2)+' km';}
@@ -1597,6 +1600,7 @@ function ensureProjections() {
 </script>
 </body>
 </html>
+
 
 
 
