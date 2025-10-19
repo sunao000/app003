@@ -1102,7 +1102,6 @@ function showTop3Combos(resultList){
     return;
   }
 
-  // 小ヘルパ
   const sd = (a)=>{ if(!a.length) return 0;
     const m=a.reduce((x,y)=>x+y,0)/a.length;
     return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length);
@@ -1112,14 +1111,12 @@ function showTop3Combos(resultList){
   resultList.slice(0,3).forEach((r, idx) => {
     const rank = idx+1;
 
-    // カード枠
     const wrap = document.createElement('div');
     wrap.style.border='1px solid #ddd';
     wrap.style.borderRadius='8px';
     wrap.style.padding='8px';
     wrap.style.marginBottom='8px';
 
-    // ヘッダ（スコア＆σ内訳）
     const header = document.createElement('div');
     header.innerHTML = `
       <div style="font-weight:700;margin-bottom:4px">
@@ -1133,7 +1130,6 @@ function showTop3Combos(resultList){
     `;
     wrap.appendChild(header);
 
-    // 採用休憩地点（トリガーごと）一覧
     const list = document.createElement('div');
     list.style.marginTop = '8px';
     list.innerHTML = `<div style="font-weight:600;margin-bottom:4px">採用した休憩地点（トリガーごと）</div>`;
@@ -1141,7 +1137,6 @@ function showTop3Combos(resultList){
     ol.style.margin = '4px 0 0 1.1rem';
     ol.style.fontSize = '0.92rem';
 
-    // restGroups（トリガー情報）と picksByTrigger（各トリガーで採用/不採用のPOI）を突き合わせて表示
     (restGroups || []).forEach((g, i) => {
       const li = document.createElement('li');
       const km = ((g?.rest?.routeD || 0) / 1000).toFixed(2);
@@ -1150,7 +1145,6 @@ function showTop3Combos(resultList){
         <small>(${fmt(g?.rest?.lat||0)}, ${fmt(g?.rest?.lon||0)})</small>`;
       li.appendChild(head);
 
-      // 採用されたPOI（nullなら「未採用」）
       const chosen = (r.picksByTrigger && r.picksByTrigger[i]) ? r.picksByTrigger[i] : null;
       const ul = document.createElement('ul');
       ul.style.listStyle='none'; ul.style.margin='4px 0 0'; ul.style.padding='0';
@@ -1159,7 +1153,6 @@ function showTop3Combos(resultList){
       row.style.padding='2px 0';
 
       if (chosen){
-        // 行クリックで地図フォーカス
         row.style.cursor='pointer';
         row.textContent = `・${chosen.name}　${fmt(chosen.lat)}　${fmt(chosen.lon)}`;
         row.onclick = () => {
@@ -1167,7 +1160,9 @@ function showTop3Combos(resultList){
           L.popup().setLatLng([chosen.lat, chosen.lon]).setContent(chosen.name).openOn(map);
         };
       }else{
-        row.textContent = '・（このトリガーでは休憩地点を採用しない組み合わせ）';
+        const hadCand = (restGroups[i]?.pois || []).length > 0;
+        row.textContent = hadCand ? '・（候補あり未採用 → 自動補修で採用に置換される想定）'
+                                  : '・（候補なし）';
         row.style.color = '#777';
       }
 
@@ -1179,83 +1174,56 @@ function showTop3Combos(resultList){
     list.appendChild(ol);
     wrap.appendChild(list);
 
-    // このルートを表示ボタン
     const btnWrap = document.createElement('div');
     btnWrap.style.marginTop='8px';
     const btn = document.createElement('button');
     btn.textContent = 'このルートを表示';
     btn.onclick = async () => {
-  // ボタン連打防止
-  btn.disabled = true;
-  btn.textContent = 'ルート生成中...';
+      btn.disabled = true;
+      btn.textContent = 'ルート生成中...';
+      try {
+        let feature = r.feature;
+        if (!feature) {
+          const start = pts.find(p=>p.type==='start') || pts[0];
+          const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
+          if (!start || !goal) { alert('スタート/ゴールが見つかりません。'); return; }
+          const picksArray = (r.picksByTrigger && Array.isArray(r.picksByTrigger))
+            ? r.picksByTrigger.filter(Boolean)
+            : (r.picks || []);
+          const wps = [start, ...picksArray, goal].map(p=>({lat:p.lat, lon:p.lon, name:p.name || 'POI'}));
+          const profile = $('profileSelect').value;
+          const out = await routeLegStatsForWaypoints(wps, profile);
+          feature = out.feature;
+        }
+        if (!feature) { alert('ルートを生成できませんでした。'); return; }
 
-  try {
-    // 1) ルートGeoJSON（feature）を用意
-    let feature = r.feature;
+        clearRouteLayers();
+        const color = '#00aa88';
+        const layer = L.geoJSON(feature, { style:{ color, weight: 7 } }).addTo(map);
+        routeLayers['combo#'+rank] = layer;
 
-    // 「ビーム/貪欲」などゼロAPI結果の場合は feature が無いので、ここで1回だけORSへ
-    if (!feature) {
-      const start = pts.find(p=>p.type==='start') || pts[0];
-      const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
-      if (!start || !goal) { alert('スタート/ゴールが見つかりません。'); return; }
+        const start = pts.find(p=>p.type==='start') || pts[0];
+        const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
+        const picksArray = (r.picksByTrigger && Array.isArray(r.picksByTrigger))
+          ? r.picksByTrigger.filter(Boolean)
+          : (r.picks || []);
+        setComboMarkers(start, picksArray, goal);
 
-      // トリガー順で採用POIを取得（picksByTrigger が無ければ picks を使う）
-      const picksArray = (r.picksByTrigger && Array.isArray(r.picksByTrigger))
-        ? r.picksByTrigger.filter(Boolean)
-        : (r.picks || []);
-
-      // ウェイポイント列を組み立て
-      const wps = [start, ...picksArray, goal].map(p=>({
-        lat: p.lat, lon: p.lon, name: p.name || 'POI'
-      }));
-
-      // ORSプロフィール
-      const profile = $('profileSelect').value;
-
-      // 既存の関数を利用して1回だけルート生成
-      const out = await routeLegStatsForWaypoints(wps, profile);
-      feature = out.feature; // 以降で描画に使う
-    }
-
-    if (!feature) {
-      alert('ルートを生成できませんでした。');
-      return;
-    }
-
-    // 2) 既存ルートをクリアして描画
-    clearRouteLayers();
-    const color = '#00aa88';
-    const layer = L.geoJSON(feature, { style:{ color, weight: 7 } }).addTo(map);
-    routeLayers['combo#'+rank] = layer;
-
-    // ★ 3) 使った地点だけピンを再配置（←これが追加点）
-    const start = pts.find(p=>p.type==='start') || pts[0];
-    const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
-    const picksArray = (r.picksByTrigger && Array.isArray(r.picksByTrigger))
-      ? r.picksByTrigger.filter(Boolean)
-      : (r.picks || []);
-    setComboMarkers(start, picksArray, goal);
-
-    // 4) 安全にズーム（空境界対策）
-    if (layer.getBounds && layer.getBounds().isValid && layer.getBounds().isValid()) {
-      map.fitBounds(layer.getBounds().pad(0.1));
-    } else {
-      // フォールバック：採用POI or スタート地点へ
-      const fallback = (r.picks && r.picks[0]) || pts[0];
-      if (fallback) map.flyTo([fallback.lat, fallback.lon], 14);
-    }
-
-    setActiveButton(null);
-  } catch (e) {
-    console.error(e);
-    alert('ルート描画でエラー: ' + (e.message || e));
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'このルートを表示';
-  }
-};
-
-
+        if (layer.getBounds && layer.getBounds().isValid && layer.getBounds().isValid()) {
+          map.fitBounds(layer.getBounds().pad(0.1));
+        } else {
+          const fallback = (r.picks && r.picks[0]) || pts[0];
+          if (fallback) map.flyTo([fallback.lat, fallback.lon], 14);
+        }
+        setActiveButton(null);
+      } catch (e) {
+        console.error(e);
+        alert('ルート描画でエラー: ' + (e.message || e));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'このルートを表示';
+      }
+    };
     btnWrap.appendChild(btn);
     wrap.appendChild(btnWrap);
 
@@ -1396,33 +1364,65 @@ function evalByCums(restGroups, picksByTrigger, cumTotals){
   const score = sd(distF) + sd(timeF) + sd(energyF);
   return { stats: { dist: distF, time: timeF, energy: energyF }, score: Number.isFinite(score)? score : 0 };
 }
+/* ===== 共通ユーティリティ：候補検査＆未採用の強制補修 ===== */
+
+// i番目トリガーに有効候補(_proj.cumDが有限)があるか？
+function hasValidCand(restGroups, i){
+  const g = restGroups[i];
+  if (!g) return false;
+  const valid = (g.pois || []).filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+  return valid.length > 0;
+}
+
+// 未採用(null)を残さないための補修：
+// 候補があるトリガーでは、等間隔ターゲットに最も近い候補で穴埋めする
+function repairNullPicks(restGroups, cumTotals, picks){
+  const R = restGroups.length;
+  const totalD = Number(cumTotals?.D) || 0;
+  if (!R || !Number.isFinite(totalD) || totalD <= 0) return picks;
+
+  const out = picks.slice();
+  for (let i = 0; i < R; i++){
+    if (out[i]) continue;                        // 既に採用済み
+    if (!hasValidCand(restGroups, i)) continue;  // 物理的に候補なしならスキップ
+
+    const g = restGroups[i];
+    const target = totalD * (i + 1) / (R + 1);
+    const valid = (g.pois || []).filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+    if (!valid.length) continue;
+
+    valid.sort((a,b)=>Math.abs(a._proj.cumD - target) - Math.abs(b._proj.cumD - target));
+    out[i] = valid[0];
+  }
+  return out;
+}
 
 
-/* ===== ビームサーチ（ゼロAPI）: 候補ありトリガーは必ず採用 ===== */
-function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty = 1e6, forbidNullWhenCand = false) {
+/* ===== ビームサーチ（ゼロAPI）：候補ありは必採用＋未採用補修 ===== */
+function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty = 1e6, forbidNullWhenCand = true) {
   // beams 要素: { picks: [...(p or null)], score, pickedCount }
   let beams = [{ picks: [], score: 0, pickedCount: 0 }];
 
-  for (let i = 0; i < restGroups.length; i++) {
+  for (let i = 0; i < restGroups.length; i++){
     const g = restGroups[i];
     const valid = (g?.pois || []).filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
 
-    // ★ 候補があるトリガーでは null を出さない
+    // ★ 候補がある段では null を出さない（未採用分岐を作らない）
     const cand = valid.length
       ? (forbidNullWhenCand ? valid : [...valid, null])
       : [null];
 
     const next = [];
-    for (const b of beams) {
-      for (const p of cand) {
+    for (const b of beams){
+      for (const p of cand){
         const picks = b.picks.concat([p]);
 
-        // ゼロAPI評価
+        // ゼロAPI近似評価
         const ev = evalByCums(restGroups, picks, cumTotals);
         let s = ev.score;
 
-        // ★ 候補があるのに null を選んだ場合、強ペナルティ
-        if (p === null && valid.length) {
+        // ★ 候補があるのに null を選んだ場合は強ペナルティ
+        if (p === null && valid.length){
           s += nullPenalty;
         }
 
@@ -1435,25 +1435,25 @@ function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty =
     }
 
     // スコア上位 width 件のみ保持
-    next.sort((a, b) => a.score - b.score);
+    next.sort((a,b)=>a.score - b.score);
     beams = next.slice(0, width);
   }
 
-  // 最低採用数の制約（候補があるトリガー分を採用する）
+  // ★ 最低採用数の制約（候補があるトリガー分を採用）
   let final = beams.filter(b => b.pickedCount >= minRest);
   if (!final.length) final = beams;
 
-  // 最終スコア再計算＋整形
+  // ★ 未採用(null)の“補修”をかけてから最終スコア再計算
   final = final.map(b => {
-    const ev = evalByCums(restGroups, b.picks, cumTotals);
+    const fixedPicks = repairNullPicks(restGroups, cumTotals, b.picks);
+    const ev = evalByCums(restGroups, fixedPicks, cumTotals);
     return {
-      picksByTrigger: b.picks,
+      picksByTrigger: fixedPicks,  // ← 修正後の picks を返す
       score: ev.score,
       stats: ev.stats
     };
-  }).sort((a, b) => a.score - b.score);
+  }).sort((a,b)=>a.score - b.score);
 
-  // 上位3件だけ返す
   return final.slice(0, 3);
 }
 
@@ -1546,4 +1546,5 @@ function ensureProjections() {
 </script>
 </body>
 </html>
+
 
