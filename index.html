@@ -630,54 +630,94 @@ async function makeRestPoints(feature,mass,flat){
     }
   }
 
-  // 統計トリガ
-  if($('optStatTrigger').checked){
-    const mean=Number($('statMean').value), vari=Number($('statVar').value);
-    const rng=()=>Math.random();
-    const normal=()=>Math.sqrt(-2*Math.log(rng()))*Math.cos(2*Math.PI*rng());
-    let target=mean + Math.sqrt(vari)*normal();
-    let acc=0;
-    for(const s of segs){
-      for(const st of s.steps||[]){
-        const [i0,i1]=st.way_points||[0,0];
-        const d=st.distance||0;
-        acc += d/1000;
-        if(acc >= target){
-          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
+  // 統計トリガ（安全化パッチ）
+  if ($('optStatTrigger').checked) {
+    const meanRaw = Number($('statMean').value);
+    const varRaw  = Number($('statVar').value);
+
+    const mean  = Number.isFinite(meanRaw) ? meanRaw : 0;
+    const sigma = (Number.isFinite(varRaw) && varRaw >= 0) ? Math.sqrt(varRaw) : 0;
+
+    // Box-Muller：0 の log 回避
+    const normal = () => {
+      let u = Math.random(); if (u <= 1e-12) u = 1e-12;
+      let v = Math.random();
+      return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    };
+
+    // 休憩間隔の下限（km）。必要なら 0.3～1.0 で好み調整
+    const MIN_KM = 0.5;
+
+    let target = Math.max(MIN_KM, mean + sigma * normal());
+    let accKm  = 0;
+
+    for (const s of segs) {
+      for (const st of s.steps || []) {
+        const [i0, i1] = st.way_points || [0, 0];
+        const d = st.distance || 0;        // m
+        accKm += d / 1000;
+
+        if (accKm >= target) {
+          raw.push({ lat: coords[i1][1], lon: coords[i1][0], routeD: cumDist[i1] });
           logRest(`[STAT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
-          target = mean + Math.sqrt(vari)*normal();
-          acc=0;
+
+          // 次ターゲットも下限を確保
+          target = Math.max(MIN_KM, mean + sigma * normal());
+          accKm = 0;
         }
       }
     }
   }
 
-  // 割合トリガ
-  if($('optPercentTrigger').checked){
-    const stepPct=Number($('percentStep').value)/100;
-    const metric=$('percentMetric').value;
-    const totalDist = feature.properties.summary.distance;
-    const totalTime = feature.properties.summary.duration;
-    const totalEnergy = await totalEnergyKJ(feature,mass,flat);
-    let passed=0;
-    for(const s of segs){
-      for(const st of s.steps||[]){
-        const [i0,i1]=st.way_points||[0,0];
-        const d=st.distance||0,t=st.duration||0;
-        const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
-        const dE = energyStepKJ(d,dz,mass,flat);
-        if(metric==='distance') passed+=d;
-        else if(metric==='time') passed+=t;
-        else passed+=dE;
-        const total = metric==='distance'? totalDist : metric==='time'? totalTime : totalEnergy;
-        while(passed >= stepPct*total){
-          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
-          logRest(`[PERCENT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
-          passed = 0;
+
+    // 割合トリガ（安全化パッチ）
+  if ($('optPercentTrigger').checked) {
+    // 入力値の正規化（1%～90%に丸め：好みで調整可）
+    let stepPct = Number($('percentStep').value) / 100;
+    if (!Number.isFinite(stepPct)) stepPct = 0.25;
+    stepPct = Math.min(0.9, Math.max(0.01, stepPct));
+
+    const metric = $('percentMetric').value;
+
+    const totalDist   = feature.properties.summary.distance;     // m
+    const totalTime   = feature.properties.summary.duration;     // s
+    const totalEnergy = await totalEnergyKJ(feature, mass, flat); // kJ
+
+    const total = (metric === 'distance') ? totalDist
+                : (metric === 'time')     ? totalTime
+                :                           totalEnergy;
+
+    if (!(Number.isFinite(total) && total > 0)) {
+      logRest('[PERCENT] 総量が0または非数のためスキップ');
+    } else {
+      // 閾値は「累積ターゲット」を順に足していく方式
+      let nextThreshold = stepPct * total;
+      let progressed    = 0;
+      const hasEle = coords[0].length >= 3;
+
+      for (const s of segs) {
+        for (const st of s.steps || []) {
+          const [i0, i1] = st.way_points || [0, 0];
+          const d  = st.distance || 0;  // m
+          const t  = st.duration || 0;  // s
+          const dz = hasEle ? ((coords[i1][2] || 0) - (coords[i0][2] || 0)) : 0;
+          const dE = energyStepKJ(d, dz, mass, flat);
+
+          if (metric === 'distance') progressed += d;
+          else if (metric === 'time') progressed += t;
+          else progressed += dE;
+
+          // 1ステップで複数回閾値を跨ぐ可能性があるので while で対応
+          while (progressed >= nextThreshold) {
+            raw.push({ lat: coords[i1][1], lon: coords[i1][0], routeD: cumDist[i1] });
+            logRest(`[PERCENT] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
+            nextThreshold += stepPct * total;
+          }
         }
       }
     }
-  }
+  
+
   return raw;
 }
 
@@ -1455,6 +1495,7 @@ function greedyTopKCandidates(restGroups, cumTotals, K = 3){
 </script>
 </body>
 </html>
+
 
 
 
