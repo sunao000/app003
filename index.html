@@ -233,6 +233,7 @@ window.addEventListener('DOMContentLoaded',()=>{
       alert('各休憩トリガーにPOIがありません。POI設定（カテゴリ/半径/件数）を見直してください。');
       return;
     }
+    ensureProjections();
 
     // 1) 入力＆共有データ取得
     const algo = $('algoSelect').value; // 'greedy' | 'beam3' | 'bruteforce'
@@ -277,13 +278,13 @@ window.addEventListener('DOMContentLoaded',()=>{
 
 
 if (algo === 'beam3'){
-  // 候補が「1件以上あるトリガー」の数を数える
-  const triggersWithCand = (restGroups || []).reduce((n, g) =>
-    n + (((g?.pois || []).filter(p => p && p._proj && Number.isFinite(p._proj.cumD))).length ? 1 : 0), 0);
-
-  // forbidNullWhenCand=true にして、候補があるトリガーでは null を出さない
+  // --- ビームサーチ（幅3・ゼロAPI） ---
+  // 「候補があるトリガー数」は必ず採用する
+  const triggersWithCand = (restGroups || []).reduce((n, g) => {
+    const valid = (g?.pois || []).filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+    return n + (valid.length ? 1 : 0);
+    }, 0);
   const top = beamSearch(restGroups, cumTotals, /*width*/3, /*minRest*/triggersWithCand, /*nullPenalty*/1e6, /*forbidNullWhenCand*/true);
-
   top.forEach(t => t.picks = t.picksByTrigger.filter(Boolean));
   showTop3Combos(top);
   return;
@@ -549,17 +550,7 @@ if ($('poiToggle').checked) {
 
   // ▼ 追加：パネルへ反映
   updateRestPoiPanel();
-  if (routeData.fastest && (restGroups||[]).length){
-  const {cum, coords} = buildCums(routeData.fastest);
-  const cumTotals = { D:cum.D.at(-1), T:cum.T.at(-1), E:cum.E.at(-1) };
-  for (const g of restGroups){
-    for (const p of (g.pois || [])){
-      p._proj = projectToRoute(p.lat, p.lon, coords, cum); // cumD/cumT/cumE を保持
-    }
-  }
-  // 使い回せるように保持
-  window.__cumTotals = cumTotals;
-}
+  ensureProjections();
   
 }
 
@@ -1407,33 +1398,31 @@ function evalByCums(restGroups, picksByTrigger, cumTotals){
 }
 
 
-// ビームサーチ（ゼロAPI）: 最低採用数の制約 + 未採用ペナルティに対応
-function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty = 1e6, forbidNullWhenCand = false){
+/* ===== ビームサーチ（ゼロAPI）: 候補ありトリガーは必ず採用 ===== */
+function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty = 1e6, forbidNullWhenCand = false) {
+  // beams 要素: { picks: [...(p or null)], score, pickedCount }
   let beams = [{ picks: [], score: 0, pickedCount: 0 }];
 
-  for (let i = 0; i < restGroups.length; i++){
+  for (let i = 0; i < restGroups.length; i++) {
     const g = restGroups[i];
     const valid = (g?.pois || []).filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
 
-    // ★ 候補があるトリガーでは null を出さないモード
-    let cand;
-    if (valid.length){
-      cand = forbidNullWhenCand ? valid : [...valid, null];
-    } else {
-      // そもそも候補が無いなら null だけ（占位）
-      cand = [null];
-    }
+    // ★ 候補があるトリガーでは null を出さない
+    const cand = valid.length
+      ? (forbidNullWhenCand ? valid : [...valid, null])
+      : [null];
 
     const next = [];
-    for (const b of beams){
-      for (const p of cand){
+    for (const b of beams) {
+      for (const p of cand) {
         const picks = b.picks.concat([p]);
 
+        // ゼロAPI評価
         const ev = evalByCums(restGroups, picks, cumTotals);
         let s = ev.score;
 
-        // null に強ペナルティ（候補があったのに未採用を選んだ場合）
-        if (p === null && valid.length){
+        // ★ 候補があるのに null を選んだ場合、強ペナルティ
+        if (p === null && valid.length) {
           s += nullPenalty;
         }
 
@@ -1445,52 +1434,82 @@ function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty =
       }
     }
 
-    next.sort((a,b)=>a.score-b.score);
+    // スコア上位 width 件のみ保持
+    next.sort((a, b) => a.score - b.score);
     beams = next.slice(0, width);
   }
 
-  // 最低採用数（候補があったトリガー分）を満たすものだけ
+  // 最低採用数の制約（候補があるトリガー分を採用する）
   let final = beams.filter(b => b.pickedCount >= minRest);
   if (!final.length) final = beams;
 
+  // 最終スコア再計算＋整形
   final = final.map(b => {
     const ev = evalByCums(restGroups, b.picks, cumTotals);
-    return { picksByTrigger: b.picks, score: ev.score, stats: ev.stats };
-  }).sort((a,b)=>a.score-b.score);
+    return {
+      picksByTrigger: b.picks,
+      score: ev.score,
+      stats: ev.stats
+    };
+  }).sort((a, b) => a.score - b.score);
 
+  // 上位3件だけ返す
   return final.slice(0, 3);
 }
 
 
 
-// 各トリガー t に対して、等間隔ターゲット (cumTotals.D * (t+1)/(R+1)) に近い順に上位K候補を返す（ゼロAPI）
-function greedyTopKCandidates(restGroups, cumTotals, K = 3){
+
+/* ===== 等間隔貪欲法（修正版）: 候補がある場合は必ず採用 ===== */
+function greedyTopKCandidates(restGroups, cumTotals, K = 3) {
   const R = restGroups.length;
   const groups = [];
 
-  for (let t = 0; t < R; t++){
+  for (let t = 0; t < R; t++) {
     const g = restGroups[t];
-    const target = cumTotals.D * (t+1) / (R+1); // m（距離基準）
-    const pois = (g && Array.isArray(g.pois)) ? g.pois : [];
+    const target = cumTotals.D * (t + 1) / (R + 1); // m（距離基準）
+    let pois = (g && Array.isArray(g.pois)) ? g.pois : [];
 
-    if (!pois.length){
-      // 候補が無いトリガーは null 1件で占位（未採用を意味）
-      groups.push([null]);
+    if (!pois.length) {
+      groups.push([null]); // 物理的に候補ゼロ
       continue;
     }
 
-    // _proj.cumD（ルート上の累積距離）からターゲットに近い順に並べる
-    const ranked = pois
-      .filter(p => p && p._proj && Number.isFinite(p._proj.cumD))
-      .map(p => ({ p, diff: Math.abs(p._proj.cumD - target) }))
-      .sort((a,b) => a.diff - b.diff)
-      .slice(0, K)
-      .map(x => x.p); // POIだけに戻す
+    // --- 射影値 _proj が無い場合に補完 ---
+    const needProj = pois.some(p => p && (!p._proj || !Number.isFinite(p._proj.cumD)));
+    if (needProj && window.__routeCums) {
+      const { cum, coords } = window.__routeCums;
+      pois.forEach(p => {
+        if (p && (!p._proj || !Number.isFinite(p._proj.cumD))) {
+          p._proj = projectToRoute(p.lat, p.lon, coords, cum);
+        }
+      });
+    }
 
-    // 念のため空振り対策
+    // --- 射影値があるものを優先 ---
+    const withProj = pois.filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+    let ranked;
+
+    if (withProj.length) {
+      ranked = withProj
+        .map(p => ({ p, diff: Math.abs(p._proj.cumD - target) }))
+        .sort((a, b) => a.diff - b.diff)
+        .slice(0, K)
+        .map(x => x.p);
+    } else {
+      // --- フォールバック: 距離(dist)が近い順 ---
+      ranked = pois
+        .map(p => ({ p, d: Number(p.dist) || Infinity }))
+        .sort((a, b) => a.d - b.d)
+        .slice(0, K)
+        .map(x => x.p);
+    }
+
+    // 候補があれば必ず採用。空なら [null]
     groups.push(ranked.length ? ranked : [null]);
   }
-  return groups; // 形式: [ [poi|null,...(<=K)], [ ... ], ... ]
+
+  return groups;
 }
 
 
@@ -1499,15 +1518,3 @@ function greedyTopKCandidates(restGroups, cumTotals, K = 3){
 </script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
