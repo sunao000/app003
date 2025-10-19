@@ -1160,11 +1160,10 @@ function showTop3Combos(resultList){
           L.popup().setLatLng([chosen.lat, chosen.lon]).setContent(chosen.name).openOn(map);
         };
       }else{
-        const hadCand = (restGroups[i]?.pois || []).length > 0;
-        row.textContent = hadCand ? '・（候補あり未採用 → 自動補修で採用に置換される想定）'
-                                  : '・（候補なし）';
-        row.style.color = '#777';
-      }
+  // 補修後にここへ来るのは「本当に候補ゼロのトリガー」だけ
+  row.textContent = '・（候補なし）';
+  row.style.color = '#777';
+}
 
       ul.appendChild(row);
       li.appendChild(ul);
@@ -1366,6 +1365,8 @@ function evalByCums(restGroups, picksByTrigger, cumTotals){
 }
 /* ===== 共通ユーティリティ：候補検査＆未採用の強制補修 ===== */
 
+/* ===== 共通ユーティリティ：候補検査＆未採用の強制補修 ===== */
+
 // i番目トリガーに有効候補(_proj.cumDが有限)があるか？
 function hasValidCand(restGroups, i){
   const g = restGroups[i];
@@ -1448,7 +1449,7 @@ function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty =
     const fixedPicks = repairNullPicks(restGroups, cumTotals, b.picks);
     const ev = evalByCums(restGroups, fixedPicks, cumTotals);
     return {
-      picksByTrigger: fixedPicks,  // ← 修正後の picks を返す
+      picksByTrigger: fixedPicks,  // ← 修正後の picks を返す（以後の表示は必ず採用表示になる）
       score: ev.score,
       stats: ev.stats
     };
@@ -1546,5 +1547,6 @@ function ensureProjections() {
 </script>
 </body>
 </html>
+
 
 
