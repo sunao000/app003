@@ -1512,9 +1512,38 @@ function greedyTopKCandidates(restGroups, cumTotals, K = 3) {
   return groups;
 }
 
+function ensureProjections() {
+  // ルート情報や休憩グループが存在しない場合は何もしない
+  if (!routeData.fastest || !Array.isArray(restGroups) || !restGroups.length) return;
 
+  // ルート上の累積データを構築
+  const { cum, coords } = buildCums(routeData.fastest);
+  window.__routeCums = { cum, coords };
+  window.__cumTotals = {
+    D: cum.D.at(-1),
+    T: cum.T.at(-1),
+    E: cum.E.at(-1)
+  };
+
+  // 各休憩グループの POI に射影データを付ける
+  for (const g of restGroups) {
+    const arr = g?.pois || [];
+    for (const p of arr) {
+      if (!p) continue;
+
+      // 既に _proj があり cumD が有限値ならスキップ
+      if (p._proj && Number.isFinite(p._proj.cumD)) continue;
+
+      // _proj を計算して付与
+      p._proj = projectToRoute(p.lat, p.lon, coords, cum);
+    }
+  }
+
+  console.log("[ensureProjections] 射影を再計算しました");
+}
 
 
 </script>
 </body>
 </html>
+
