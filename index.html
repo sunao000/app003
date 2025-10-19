@@ -886,111 +886,161 @@ async function overpassRetry(query) {
   return await overpassQuery(query);
 }
 
-/* ===== POI取得：半径固定・近い順に n 件 ===== */
+/* ===== POI取得（改良版）：カテゴリ自動拡張＋半径段階拡大＋距離ソート ===== */
 async function fetchPoisAround(latRaw, lonRaw, baseRadius, limit) {
+  // --- 入力/前処理 ---
+  const round6 = v => Math.round(Number(v) * 1e6) / 1e6;
+  const lat = round6(latRaw), lon = round6(lonRaw);
+  const centerLL = L.latLng(lat, lon);
+
+  const limitN = Math.max(1, Number(limit) || 5);
+
+  // ユーザの3チェックを読む（コンビニ/スーパー/ドラッグ）
   const useConvenience = document.getElementById('chkConvenience')?.checked ?? true;
   const useSuper       = document.getElementById('chkSuper')?.checked ?? true;
   const useDrug        = document.getElementById('chkDrug')?.checked ?? true;
-  if (!useConvenience && !useSuper && !useDrug) return [];
 
-  const round6 = v => Math.round(Number(v) * 1e6) / 1e6;
-  const lat = round6(latRaw), lon = round6(lonRaw);
-  const radius = Math.max(30, Number(baseRadius) || 50000);
-  const centerLL = L.latLng(lat, lon);
+  // まずはユーザ指定カテゴリのみで試す。0件なら休憩に適したカテゴリを自動で追加して再試行
+  const PRIMARY_TAGS = [];
+  if (useConvenience) PRIMARY_TAGS.push(['shop', 'convenience']);
+  if (useSuper)       PRIMARY_TAGS.push(['shop', 'supermarket']);
+  if (useDrug) {
+    PRIMARY_TAGS.push(['shop','chemist'], ['shop','pharmacy'], ['amenity','pharmacy']);
+  }
 
-  // 統合クエリ（node/way を明示）
-  const unifiedQuery = (() => {
+  // 追加カテゴリ（候補ゼロ時に順次追加）
+  const EXTRA_TAGS = [
+    ['amenity','cafe'],
+    ['amenity','restaurant'],
+    ['amenity','fast_food'],
+    ['amenity','drinking_water'],
+    ['amenity','toilets'],
+    ['amenity','shelter'],
+    ['amenity','bench'],
+    ['amenity','bicycle_repair_station'],
+    ['tourism','picnic_site'],
+    ['highway','rest_area'],
+    // 自販機（飲料）: vending_machine=drinks or amenity=vending_machine + vending=drinks
+    ['amenity','vending_machine'],
+  ];
+
+  // 段階的に広げる半径（m）。baseRadiusを優先して組み込む
+  const radiusSteps = (() => {
+    const base = Math.max(100, Number(baseRadius) || 5000); // 初期は小さめから
+    const steps = [1000, 2000, 3000, 5000, 8000, 12000, 20000, 30000, 50000, 80000, 100000];
+    // base を先頭へ（重複排除）
+    const s = [base, ...steps].filter((v, i, a) => a.indexOf(v) === i).sort((a,b)=>a-b);
+    return s;
+  })();
+
+  // Overpassクエリを作る（node/way両方、out center）
+  const buildQuery = (tags, radius) => {
+    if (!tags.length) return null;
+    // 同一キーの複数値（例: shop=chemist / shop=pharmacy）も繋げて検索
     const clauses = [];
-    const shopVals = [];
-    if (useConvenience) shopVals.push('convenience');
-    if (useSuper)       shopVals.push('supermarket');
-    if (useDrug)        shopVals.push('chemist','pharmacy');
-    if (shopVals.length) {
-      const re = '(' + shopVals.join('|') + ')';
-      clauses.push(`node(around:${radius},${lat},${lon})["shop"~"${re}"]`);
-      clauses.push(`way(around:${radius},${lat},${lon})["shop"~"${re}"]`);
+    // tags は [ [k,v], [k,v], ... ]
+    // ここで key ごとに v をまとめた正規表現にする
+    const grouped = {};
+    for (const [k, v] of tags) {
+      grouped[k] = grouped[k] || new Set();
+      grouped[k].add(v);
     }
-    if (useDrug) {
-      clauses.push(`node(around:${radius},${lat},${lon})["amenity"="pharmacy"]`);
-      clauses.push(`way(around:${radius},${lat},${lon})["amenity"="pharmacy"]`);
-    }
-    if (!clauses.length) return null;
+    Object.entries(grouped).forEach(([k, set]) => {
+      const values = Array.from(set);
+      // vending_machine は補助属性 vending=drinks にも対応
+      if (k === 'amenity' && values.includes('vending_machine')) {
+        clauses.push(`node(around:${radius},${lat},${lon})["amenity"="vending_machine"]`);
+        clauses.push(`way(around:${radius},${lat},${lon})["amenity"="vending_machine"]`);
+        clauses.push(`node(around:${radius},${lat},${lon})["vending"~"(drinks|beverages)"]`);
+        clauses.push(`way(around:${radius},${lat},${lon})["vending"~"(drinks|beverages)"]`);
+      }
+      const re = '(' + values.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')';
+      clauses.push(`node(around:${radius},${lat},${lon})["${k}"~"${re}"]`);
+      clauses.push(`way(around:${radius},${lat},${lon})["${k}"~"${re}"]`);
+    });
+
     return `[out:json][timeout:25];
 (
   ${clauses.join(';\n  ')};
 );
 out center;`;
-  })();
-
-  // 400時の分割クエリ
-  const splitSpecs = [];
-  if (useConvenience) splitSpecs.push(['shop','convenience']);
-  if (useSuper)       splitSpecs.push(['shop','supermarket']);
-  if (useDrug) {
-    splitSpecs.push(['shop','chemist'], ['shop','pharmacy'], ['amenity','pharmacy']);
-  }
-  const runSplitQueries = async () => {
-    const acc = [];
-    for (const [k,v] of splitSpecs) {
-      const q = `[out:json][timeout:25];
-(
-  node(around:${radius},${lat},${lon})["${k}"="${v}"];
-  way(around:${radius},${lat},${lon})["${k}"="${v}"];
-);
-out center;`;
-      try {
-        const data = await overpassRetry(q);
-        (data.elements || []).forEach(e => acc.push(e));
-        await new Promise(r=>setTimeout(r,150));
-      } catch (err) {
-        console.warn('[Overpass split] fail', k, v, err);
-      }
-    }
-    return acc;
   };
 
-  let elements = [];
-  if (unifiedQuery) {
+  // 実行→elements→結果整形
+  const runOnce = async (tags, radius) => {
+    let elements = [];
+    const q = buildQuery(tags, radius);
+    if (!q) return [];
+
     try {
-      const data = await overpassRetry(unifiedQuery);
+      const data = await overpassRetry(q);
       elements = data.elements || [];
     } catch (err) {
-      if (String(err).includes('status=400')) {
-        elements = await runSplitQueries();
-      } else {
-        throw err;
+      // 400は構文系 → ログして空扱い。他エラーは上位へ投げてもOKだが、ここでは空で継続。
+      if (String(err).includes('status=400')) console.warn('[Overpass] 400 with query, continue fallback.');
+      else console.warn('[Overpass] error', err);
+      elements = [];
+    }
+
+    // elements を {name, lat, lon, dist} に整形
+    const results = [];
+    elements.forEach(e => {
+      const ll = e.type === 'node'
+        ? [e.lat, e.lon]
+        : (e.center ? [e.center.lat, e.center.lon] : null);
+      if (!ll) return;
+      const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
+      const dist = centerLL.distanceTo([ll[0], ll[1]]); // m
+      results.push({ name, lat: ll[0], lon: ll[1], dist });
+    });
+
+    // 重複排除（同名＆近接点が多い場合もあるので座標キーで粗く）
+    const seen = new Set();
+    const uniq = [];
+    for (const p of results) {
+      const key = `${p.name}|${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(p);
+    }
+
+    // 距離でソート
+    uniq.sort((a,b)=>a.dist-b.dist);
+    return uniq;
+  };
+
+  // 1) まず「ユーザ指定カテゴリのみ」で半径ステップを回す
+  let picked = [];
+  for (const r of radiusSteps) {
+    const res = await runOnce(PRIMARY_TAGS, r);
+    if (res.length >= limitN) {
+      picked = res.slice(0, limitN);
+      break;
+    }
+    // 足りない分は仮に確保（次ステップで埋まれば上書きされる）
+    if (res.length && !picked.length) picked = res.slice(0, limitN);
+  }
+
+  // 2) それでも不足するなら、カテゴリを自動拡張して再試行
+  if (picked.length < limitN) {
+    const MERGED = PRIMARY_TAGS.slice();
+    EXTRA_TAGS.forEach(t => MERGED.push(t));
+
+    for (const r of radiusSteps) {
+      const res = await runOnce(MERGED, r);
+      if (res.length >= limitN) {
+        picked = res.slice(0, limitN);
+        break;
+      }
+      if (res.length && res.length > picked.length) {
+        picked = res.slice(0, limitN);
       }
     }
   }
 
-  // elements → results（距離を付与）
-  const resultsRaw = [];
-  elements.forEach(e => {
-    const ll = e.type === 'node'
-      ? [e.lat, e.lon]
-      : (e.center ? [e.center.lat, e.center.lon] : null);
-    if (!ll) return;
-    const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
-    const dist = centerLL.distanceTo([ll[0], ll[1]]); // m
-    resultsRaw.push({ name, lat: ll[0], lon: ll[1], dist });
-  });
-
-  // 近い順にソート → 上位 n 件
-  resultsRaw.sort((a,b)=>a.dist-b.dist);
-  const limitN = Math.max(1, Number(limit) || 5);
-  const topN = resultsRaw.slice(0, limitN);
-
-  // 同名・同座標重複の軽い除去
-  const seen = new Set();
-  const results = [];
-  for (const p of topN) {
-    const key = `${p.name}|${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    results.push(p);
-  }
-  return results;
+  return picked;
 }
+
 
 /* ===== 小ユーティリティ ===== */
 function sanitizeCoord(n, fallback) {
@@ -1547,6 +1597,7 @@ function ensureProjections() {
 </script>
 </body>
 </html>
+
 
 
 
