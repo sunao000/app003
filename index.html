@@ -670,7 +670,7 @@ async function makeRestPoints(feature,mass,flat){
   }
 
 
-    // 割合トリガ（安全化パッチ）
+   // 割合トリガ（安全化パッチ）
   if ($('optPercentTrigger').checked) {
     // 入力値の正規化（1%～90%に丸め：好みで調整可）
     let stepPct = Number($('percentStep').value) / 100;
@@ -716,6 +716,8 @@ async function makeRestPoints(feature,mass,flat){
         }
       }
     }
+  }
+
   
 
   return raw;
@@ -1495,6 +1497,7 @@ function greedyTopKCandidates(restGroups, cumTotals, K = 3){
 </script>
 </body>
 </html>
+
 
 
 
