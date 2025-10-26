@@ -152,6 +152,7 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
       <option value="greedy" selected>等間隔貪欲（高速・ゼロAPI）</option>
       <option value="beam3">ビームサーチ（幅3・ゼロAPI）</option>
       <option value="bruteforce">総当たり（API多め・高精度）</option>
+      <option value="dp">DP（最短路・ゼロAPI）</option>
     </select>
   </label>
   <small style="color:#666;margin-left:8px">※総当たりはAPI制限に注意</small>
@@ -270,6 +271,7 @@ window.addEventListener('DOMContentLoaded',()=>{
     alert('組み合わせ候補が作れませんでした（候補不足）。');
     return;
   }
+      
 
   // 全候補を「累積差分の近似評価」で採点（ゼロAPI）
   const scored = combos.map(cmb => {
@@ -340,6 +342,12 @@ if (algo === 'beam3'){
       showTop3Combos(results.slice(0,3));
       return;
     }
+    if (algo === 'dp'){
+  const best = dpSearch(restGroups, cumTotals);
+  best.picks = best.picksByTrigger.filter(Boolean);
+  showTop3Combos([best]);  // DPは最適解1本を出す
+  return;
+}
 
     // 未知の値（保険）
     alert('未知のアルゴリズム指定です。');
@@ -1770,13 +1778,94 @@ function arterialScore(feature){
   return (wSpeed*meanSpeed) - (wTurns*turnsPerKm);
 }
 
+/* ===== DP（層グラフ最短路） ===== */
+// restGroups: [{rest, pois:[p...]}, ...], cumTotals: {D,T,E}
+function dpSearch(restGroups, cumTotals){
+  const R = restGroups.length;
+  const totalD = Number(cumTotals?.D) || 0;
+
+  // 各層の候補（_proj が無いものは routeD で暫定補完）
+  const layers = restGroups.map((g, i) => {
+    let pois = (g?.pois || []).slice();
+    if (g?.rest && Number.isFinite(g.rest.routeD)) {
+      pois.forEach(p => {
+        if (!p._proj || !Number.isFinite(p._proj.cumD)) {
+          p._proj = { cumD: Number(g.rest.routeD), perpM: Number(p.distFromTriggerM)||0 };
+        }
+      });
+    }
+    // 等間隔ターゲットに対する単点コスト（並べ替えにも使う）
+    const target = targetCumDForIndex(i, R, totalD);
+    pois.sort((a,b)=> nodeCost(a, target) - nodeCost(b, target));
+    return pois;
+  });
+
+  // DPテーブル
+  // dp[i][j] = 第i層で j番目POIを選んだ時の最小コスト
+  // prev[i][j] = 一つ前の層のインデックス
+  const dp = [], prev = [];
+  for (let i=0;i<R;i++) { dp[i] = []; prev[i] = []; }
+
+  // 初期化：スタート→第0層の各POIのコスト（単点コストのみ）
+  const t0 = targetCumDForIndex(0, R, totalD);
+  layers[0].forEach((p, j) => {
+    dp[0][j] = nodeCost(p, t0);
+    prev[0][j] = -1;
+  });
+
+  // 遷移：第i-1層 → 第i層
+  for (let i=1;i<R;i++){
+    const ti = targetCumDForIndex(i, R, totalD);
+    for (let j=0;j<layers[i].length;j++){
+      let best = { cost: Infinity, k: -1 };
+      const pj = layers[i][j];
+
+      for (let k=0;k<layers[i-1].length;k++){
+        const costPrev = dp[i-1][k];
+        if (!Number.isFinite(costPrev)) continue;
+
+        // エッジコスト（区間の「等間隔ズレ」補正を少し加点：累積距離の前後差が狭すぎ/広すぎを抑制）
+        const pi = layers[i-1][k];
+        const segD = Math.abs((pj?._proj?.cumD||0) - (pi?._proj?.cumD||0)); // m
+        const ideal = totalD / (R + 1); // 理想区間長
+        const intervalPenalty = Math.abs(segD - ideal) / 1000; // km差分
+
+        const edge = intervalPenalty * 0.5; // 調整係数
+        const node = nodeCost(pj, ti);
+
+        const cand = costPrev + edge + node;
+        if (cand < best.cost){ best = { cost: cand, k }; }
+      }
+      dp[i][j] = best.cost;
+      prev[i][j] = best.k;
+    }
+  }
+
+  // 復元（第R-1層の最小コスト終端から辿る）
+  let endJ = -1, bestVal = Infinity;
+  for (let j=0;j<layers[R-1].length;j++){
+    if (dp[R-1][j] < bestVal){ bestVal = dp[R-1][j]; endJ = j; }
+  }
+  if (endJ < 0) {
+    // どの層にも候補が無い場合の保険：空で返す
+    return { picksByTrigger: Array(R).fill(null), stats:{dist:[],time:[],energy:[]}, score: 1e9 };
+  }
+
+  const picks = Array(R).fill(null);
+  let i = R-1, j = endJ;
+  while (i >= 0 && j >= 0){
+    picks[i] = layers[i][j];
+    j = prev[i][j];
+    i--;
+  }
+
+  // 既存の近似評価で統計を作成（可視化のため）
+  const ev = evalByCums(restGroups, picks, cumTotals);
+  return { picksByTrigger: picks, stats: ev.stats, score: ev.score };
+}
+
+
   
 </script>
 </body>
 </html>
-
-
-
-
-
-
