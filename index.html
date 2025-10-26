@@ -356,6 +356,7 @@ if (algo === 'beam3'){
 
   $('btnShowShortest').onclick = ()=> toggleSingleRoute('shortest', $('btnShowShortest'));
   $('btnShowFastest').onclick  = ()=> toggleSingleRoute('fastest',  $('btnShowFastest'));
+  $('btnShowSlope').onclick    = ()=> toggleSingleRoute('slope',    $('btnShowSlope'));
  $('btnShowArterial').onclick = ()=> toggleSingleRoute('arterial', $('btnShowArterial'));
 
   // グラフダウンロードボタン
@@ -474,6 +475,7 @@ async function drawRoutes(){
     const shortest = await dir({...base, preference:'shortest'}, profile);
     const fastest  = await dir({...base, preference:'fastest'},  profile);
 
+    let slope = shortest.features[0];
     let arterial = fastest.features[0];
     if(coords.length===2){
       const alt = await dir({...base, preference:'shortest',
@@ -767,14 +769,17 @@ async function showRouteLegSummary(){
   const mass = 75, flat = 18;
   const outDiv = document.getElementById('legSummaryAll');
   outDiv.innerHTML = '';
-  for (const key of ['shortest','fastest','slope']){
+  for (const key of ['shortest','fastest','slope','arterial']){
     const feat = routeData[key];
     if(!feat) continue;
     const s = await calcLegStats(feat, mass, flat);
     const ds = summaryStats(s.dist);
     const ts = summaryStats(s.time);
     const es = summaryStats(s.energy);
-    const label = key==='shortest'?'最短':key==='fastest'?'最速':'勾配';
+    const label = key==='shortest' ? '最短'
+            : key==='fastest'  ? '最速'
+            : key==='slope'    ? '勾配'
+            :                    '幹線';
     const html = `
       <details style="margin-bottom:8px">
         <summary><b>${label}</b> 区間統計（平均 / 分散 / 標準偏差）</summary>
@@ -1131,7 +1136,7 @@ function updateRestPoiPanel(){
         const it = document.createElement('li');
         it.style.padding = '2px 0';
         const dTrigger = (typeof p.distFromTriggerM === 'number') ? ` / トリガー距離 ${formatDist(p.distFromTriggerM)}` : '';
-        const dPerp = (p._proj && typeof p._proj.perpM === 'number') ? ` / ルート⊥ ${formatDist(p._proj.perpM)}` : '';
+        const dPerp = (p._proj && typeof p._proj.perpM === 'number') ? ` / ルート⊥ <b>${formatDist(p._proj.perpM)}</b>` : '';
         it.textContent = `・${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}${dTrigger}${dPerp}`;
         ul.appendChild(it);
       });
@@ -1318,6 +1323,23 @@ function showTop3Combos(resultList){
   });
 }
 
+/* ===== スコアリング（POI評価） ===== */
+const SCORE_WEIGHTS = { wAlign: 1.0, wPerp: 1.0, wTrig: 0.5 };
+
+function targetCumDForIndex(i, R, totalD){
+  if (!Number.isFinite(totalD) || totalD<=0) return 0;
+  return totalD * (i + 1) / (R + 1);
+}
+
+function nodeCost(p, targetCumD){
+  if (!p) return 1e9;
+  const perpM   = Number(p?._proj?.perpM) ?? 0;
+  const trigM   = Number(p?.distFromTriggerM) ?? 0;
+  const alignM  = Math.abs((Number(p?._proj?.cumD) ?? targetCumD) - targetCumD);
+  return (SCORE_WEIGHTS.wAlign * (alignM/1000)) +
+         (SCORE_WEIGHTS.wPerp  * (perpM/1000))  +
+         (SCORE_WEIGHTS.wTrig  * (trigM/1000));
+}
 
 
 /* ===== 組み合わせルート探索＆評価ユーティリティ ===== */
@@ -1508,6 +1530,10 @@ if (pois.length && g?.rest && Number.isFinite(g.rest.routeD)) {
 
 // ここから先は従来と同じロジック
 const valid = pois.filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+const totalD = Number(cumTotals?.D) || 0;
+const target = targetCumDForIndex(i, restGroups.length, totalD);
+valid.sort((a,b)=> nodeCost(a, target) - nodeCost(b, target));
+
 
 const cand = valid.length
   ? (forbidNullWhenCand ? valid : [...valid, null])
@@ -1602,20 +1628,12 @@ if (g?.rest && Number.isFinite(g.rest.routeD)) {
     const withProj = pois.filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
     let ranked;
 
-    if (withProj.length) {
-      ranked = withProj
-        .map(p => ({ p, diff: Math.abs(p._proj.cumD - target) }))
-        .sort((a, b) => a.diff - b.diff)
-        .slice(0, K)
-        .map(x => x.p);
-    } else {
-      // --- フォールバック: 距離(dist)が近い順 ---
-      ranked = pois
-        .map(p => ({ p, d: Number(p.dist) || Infinity }))
-        .sort((a, b) => a.d - b.d)
-        .slice(0, K)
-        .map(x => x.p);
-    }
+    const base = withProj.length ? withProj : pois;
+ ranked = base
+   .map(p => ({ p, c: nodeCost(p, target) }))
+   .sort((a, b) => a.c - b.c)
+   .slice(0, K)
+   .map(x => x.p);
 
     // 候補があれば必ず採用。空なら [null]
     groups.push(ranked.length ? ranked : [null]);
