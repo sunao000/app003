@@ -117,7 +117,7 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 <!-- 休憩トリガー別の候補POI -->
 <div class="section">
-  <>
+  <details open>
     <summary>休憩トリガー別の候補POI</summary>
     <ol id="restPoiPanel" style="margin:0;padding-left:1.1rem;font-size:0.9rem"></ol>
   </details>
@@ -140,7 +140,10 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   <button id="btnShowShortest">最短ルート表示</button>
   <button id="btnShowFastest">最速ルート表示</button>
   <button id="btnShowSlope">勾配考慮ルート表示</button>
+  <!-- ▼ 追加 -->
+  <button id="btnShowArterial">幹線優先ルート表示</button>
 </div>
+
 
 <!-- ルート検索アルゴリズム -->
 <div class="section">
@@ -190,7 +193,7 @@ const ORS_ROOT = 'https://api.openrouteservice.org';
 
 /* ====== ヘルパ ====== */
 let map, pts=[], markerLayer, routeLayers={}, lastDirTs=0;
-let routeData = { shortest:null, fastest:null, slope:null };
+let routeData = { shortest:null, fastest:null, slope:null, arterial:null };
 
 // ▼▼ ここに追加：休憩リスト用変数 ▼▼
 let restList = []; // 休憩地点を保存
@@ -353,7 +356,7 @@ if (algo === 'beam3'){
 
   $('btnShowShortest').onclick = ()=> toggleSingleRoute('shortest', $('btnShowShortest'));
   $('btnShowFastest').onclick  = ()=> toggleSingleRoute('fastest',  $('btnShowFastest'));
-  $('btnShowSlope').onclick    = ()=> toggleSingleRoute('slope',    $('btnShowSlope'));
+ $('btnShowArterial').onclick = ()=> toggleSingleRoute('arterial', $('btnShowArterial'));
 
   // グラフダウンロードボタン
   $('btnDownloadTime').onclick = ()=>{
@@ -441,7 +444,7 @@ function setActiveButton(btn){
 }
 function showSingleRoute(type, noFit){
   clearRouteLayers();
-  const colorMap = { shortest:'#ff0000', fastest:'#0066ff', slope:'#ff9900' };
+  const colorMap = { shortest:'#ff0000', fastest:'#0066ff', slope:'#ff9900', arterial:'#00b26b' };
   const f = routeData[type];
   if(!f){ alert('まだ計算していません'); return; }
   routeLayers[type] = L.geoJSON(f, { style:{ color: colorMap[type], weight: 6 } }).addTo(map);
@@ -471,7 +474,7 @@ async function drawRoutes(){
     const shortest = await dir({...base, preference:'shortest'}, profile);
     const fastest  = await dir({...base, preference:'fastest'},  profile);
 
-    let slope = shortest.features[0];
+    let arterial = fastest.features[0];
     if(coords.length===2){
       const alt = await dir({...base, preference:'shortest',
         alternative_routes:{target_count:3,share_factor:0.6,weight_factor:1.4}}, profile);
@@ -483,12 +486,16 @@ async function drawRoutes(){
           return s;
         }
         slope = feats.reduce((a,b)=> steepSum(a)<steepSum(b)?a:b);
+        // 幹線優先（代替経路＋fastest の中からスコア最大）
+        arterial = feats.concat(fastest.features || [])
+        .reduce((best,cand)=> arterialScore(cand) > arterialScore(best) ? cand : best, arterial);
       }
     }
 
     routeData.shortest = shortest.features[0];
     routeData.fastest  = fastest.features[0];
     routeData.slope    = slope;
+    routeData.arterial = arterial;
 
     const s1 = routeData.shortest.properties.summary;
     const s2 = routeData.fastest.properties.summary;
@@ -496,7 +503,8 @@ async function drawRoutes(){
     $('routeInfo').innerHTML =
       `<b>最短</b> ${formatDist(s1.distance)} / ${formatDur(s1.duration)}<br>`+
       `<b>最速</b> ${formatDist(s2.distance)} / ${formatDur(s2.duration)}<br>`+
-      `<b>勾配</b> ${formatDist(s3.distance)} / ${formatDur(s3.duration)}`;
+      `<b>勾配</b> ${formatDist(s3.distance)} / ${formatDur(s3.duration)}<br>`+
+      (routeData.arterial ? `<b>幹線</b> ${formatDist(routeData.arterial.properties.summary.distance)} / ${formatDur(routeData.arterial.properties.summary.duration)}` : '');
     $('distanceScore').textContent = '距離差（最速-最短）: '+(s2.distance - s1.distance).toFixed(0)+' m';
 
     /* ===== 休憩地点挿入 ===== */
@@ -561,8 +569,8 @@ if ($('poiToggle').checked) {
   }
 
   // ▼ 追加：パネルへ反映
-  updateRestPoiPanel();
   ensureProjections();
+  updateRestPoiPanel();
   
 }
 
@@ -768,7 +776,7 @@ async function showRouteLegSummary(){
     const es = summaryStats(s.energy);
     const label = key==='shortest'?'最短':key==='fastest'?'最速':'勾配';
     const html = `
-      < style="margin-bottom:8px">
+      <details style="margin-bottom:8px">
         <summary><b>${label}</b> 区間統計（平均 / 分散 / 標準偏差）</summary>
         距離: ${ds.mean.toFixed(2)} km / ${ds.var.toFixed(2)} km² / σ=${ds.std.toFixed(2)} km<br>
         時間: ${ts.mean.toFixed(2)} 分 / ${ts.var.toFixed(2)} 分² / σ=${ts.std.toFixed(2)} 分<br>
@@ -1122,10 +1130,9 @@ function updateRestPoiPanel(){
       g.pois.forEach((p) => {
         const it = document.createElement('li');
         it.style.padding = '2px 0';
-        const dtxt = (typeof p.distFromTriggerM === 'number')
-          ? ` / ${formatDist(p.distFromTriggerM)}`
-            : '';
-        it.textContent = `・${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}${dtxt}`;
+        const dTrigger = (typeof p.distFromTriggerM === 'number') ? ` / トリガー距離 ${formatDist(p.distFromTriggerM)}` : '';
+        const dPerp = (p._proj && typeof p._proj.perpM === 'number') ? ` / ルート⊥ ${formatDist(p._proj.perpM)}` : '';
+        it.textContent = `・${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}${dTrigger}${dPerp}`;
         ul.appendChild(it);
       });
     }
@@ -1384,7 +1391,7 @@ function projectToRoute(lat,lon, coords, cum){
   }
   const i = best.stepIdx;
   const lerp=(arr)=>{ const v0=arr[i-1], v1=arr[i]??v0; return v0 + (v1-v0)*best.frac; };
-  return { cumD:lerp(cum.D), cumT:lerp(cum.T), cumE:lerp(cum.E) };
+  return { cumD:lerp(cum.D), cumT:lerp(cum.T), cumE:lerp(cum.E), perpM: best.dist };
 }
 
 // picksByTrigger（各トリガーの選択）を累積から評価（ゼロAPI）
@@ -1662,12 +1669,10 @@ function dbgShowCumsAndProjections(){
 per-trigger candidates:
 ${counts || '(none)'}`;
   console.log("[ensureProjections] 射影を再計算しました");
-  // 追加：各トリガーの有効候補数をログ
-(restGroups||[]).forEach((g,i)=>{
-  const ok = (g?.pois||[]).filter(p=>p && p._proj && Number.isFinite(p._proj.cumD)).length;
-  console.log(`[projOK] trigger#${i+1}: all=${(g?.pois||[]).length}, projOK=${ok}`);
-});
-dbgShowCumsAndProjections();
+  (restGroups||[]).forEach((g,i)=>{
+      const ok = (g?.pois||[]).filter(p=>p && p._proj && Number.isFinite(p._proj.cumD)).length;
+      console.log(`[projOK] trigger#${i+1}: all=${(g?.pois||[]).length}, projOK=${ok}`);
+    });
 }
 
   
@@ -1729,10 +1734,29 @@ function injectAlgoDebugButtons(cumTotals){
   };
 }
 
+// 幹線度（大きいほど“幹線っぽい”）
+function arterialScore(feature){
+  const sum = feature?.properties?.summary || {};
+  const dist = Number(sum.distance)||0;      // m
+  const time = Number(sum.duration)||1;      // s（0回避）
+  const meanSpeed = dist / time;             // m/s
+
+  // "曲がりの少なさ" を step 数の少なさで近似
+  const segs = feature?.properties?.segments || [];
+  let stepsCount = 0;
+  for(const s of segs) stepsCount += (s.steps||[]).length;
+
+  const turnsPerKm = dist>0 ? (stepsCount/(dist/1000)) : stepsCount;
+
+  const wSpeed = 1.0, wTurns = 0.6;          // 調整OK
+  return (wSpeed*meanSpeed) - (wTurns*turnsPerKm);
+}
+
   
 </script>
 </body>
 </html>
+
 
 
 
