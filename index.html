@@ -117,12 +117,18 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 <!-- 休憩トリガー別の候補POI -->
 <div class="section">
-  <details open>
+  <>
     <summary>休憩トリガー別の候補POI</summary>
     <ol id="restPoiPanel" style="margin:0;padding-left:1.1rem;font-size:0.9rem"></ol>
   </details>
 </div>
 
+<div class="section">
+  <details open>
+    <summary>デバッグ（累積・射影）</summary>
+    <div id="dbgCums" style="font-family:ui-monospace,monospace;white-space:pre-wrap;font-size:12px;"></div>
+  </details>
+</div>
 
 
 <!-- 地点リストと地図 -->
@@ -237,6 +243,7 @@ window.addEventListener('DOMContentLoaded',()=>{
       return;
     }
     ensureProjections();
+    injectAlgoDebugButtons(window.__cumTotals);
 
     // 1) 入力＆共有データ取得
     const algo = $('algoSelect').value; // 'greedy' | 'beam3' | 'bruteforce'
@@ -534,8 +541,10 @@ if ($('poiToggle').checked) {
       logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 半径${baseRadius}m → ${pois.length}件（近い順）`);
 
       // ▼ 追加：この休憩トリガーのPOIを保存
-      if (restGroups[idx]) restGroups[idx].pois = pois;
-
+      if (restGroups[idx]) {
+        restGroups[idx].pois = pois.map(p => ({ ...p, triggerIndex: idx }));
+      }
+        
       // 既存：マップに描画
       pois.forEach(po => {
         L.marker([po.lat, po.lon], {
@@ -544,7 +553,7 @@ if ($('poiToggle').checked) {
             iconSize: [24, 24],
             iconAnchor: [12, 24]
           })
-        }).bindTooltip(po.name).addTo(markerLayer);
+        }).bindTooltip(`${po.name}${typeof po.distFromTriggerM === 'number' ? ` (${formatDist(po.distFromTriggerM)})` : ''}`).addTo(markerLayer);
       });
     } catch (e) {
       logRest(`[POI] ${(r.routeD / 1000).toFixed(2)} km: 取得失敗`);
@@ -759,7 +768,7 @@ async function showRouteLegSummary(){
     const es = summaryStats(s.energy);
     const label = key==='shortest'?'最短':key==='fastest'?'最速':'勾配';
     const html = `
-      <details open style="margin-bottom:8px">
+      < style="margin-bottom:8px">
         <summary><b>${label}</b> 区間統計（平均 / 分散 / 標準偏差）</summary>
         距離: ${ds.mean.toFixed(2)} km / ${ds.var.toFixed(2)} km² / σ=${ds.std.toFixed(2)} km<br>
         時間: ${ts.mean.toFixed(2)} 分 / ${ts.var.toFixed(2)} 分² / σ=${ts.std.toFixed(2)} 分<br>
@@ -985,7 +994,7 @@ out center;`;
       elements = [];
     }
 
-    // elements を {name, lat, lon, dist} に整形
+    // elements を {name, lat, lon, distFromTriggerM, distKm, dist} に整形（dist は互換用）
     const results = [];
     elements.forEach(e => {
       const ll = e.type === 'node'
@@ -994,7 +1003,14 @@ out center;`;
       if (!ll) return;
       const name = (e.tags && (e.tags['name:ja'] || e.tags.name || e.tags.brand)) || 'POI';
       const dist = centerLL.distanceTo([ll[0], ll[1]]); // m
-      results.push({ name, lat: ll[0], lon: ll[1], dist });
+      results.push({
+        name,
+        lat: ll[0],
+        lon: ll[1],
+        dist,                     // 互換のため残す
+        distFromTriggerM: dist,   // 明示名
+        distKm: dist / 1000       // 便利フィールド
+        });
     });
 
     // 重複排除（同名＆近接点が多い場合もあるので座標キーで粗く）
@@ -1106,7 +1122,10 @@ function updateRestPoiPanel(){
       g.pois.forEach((p) => {
         const it = document.createElement('li');
         it.style.padding = '2px 0';
-        it.textContent = `・${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}`;
+        const dtxt = (typeof p.distFromTriggerM === 'number')
+          ? ` / ${formatDist(p.distFromTriggerM)}`
+            : '';
+        it.textContent = `・${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}${dtxt}`;
         ul.appendChild(it);
       });
     }
@@ -1207,14 +1226,18 @@ function showTop3Combos(resultList){
 
       if (chosen){
         row.style.cursor='pointer';
-        row.textContent = `・${chosen.name}　${fmt(chosen.lat)}　${fmt(chosen.lon)}`;
+        const dtxt = (typeof chosen.distFromTriggerM === 'number')
+          ? ` / ${formatDist(chosen.distFromTriggerM)}`
+            : '';
+        row.textContent = `・${chosen.name}　${fmt(chosen.lat)}　${fmt(chosen.lon)}${dtxt}`;
         row.onclick = () => {
           map.flyTo([chosen.lat, chosen.lon], 17);
           L.popup().setLatLng([chosen.lat, chosen.lon]).setContent(chosen.name).openOn(map);
         };
-      }else{
-  // 補修後にここへ来るのは「本当に候補ゼロのトリガー」だけ
-  row.textContent = '・（候補なし）';
+      } else {
+  // 候補が一件も無いのか、単にその組み合わせで未採用なのかを判定
+  const hasAny = Array.isArray(g?.pois) && g.pois.length > 0;
+  row.textContent = hasAny ? '・（未採用）' : '・（候補なし）';
   row.style.color = '#777';
 }
 
@@ -1268,10 +1291,15 @@ function showTop3Combos(resultList){
           if (fallback) map.flyTo([fallback.lat, fallback.lon], 14);
         }
         setActiveButton(null);
-      } catch (e) {
-        console.error(e);
-        alert('ルート描画でエラー: ' + (e.message || e));
-      } finally {
+      } catch (e){
+  console.error(e);
+  const hints = [
+    !ORS_KEY ? 'ORS_KEY が未設定' : null,
+    !(pts && pts.length>=2) ? 'Start/Goal が不正' : null,
+    !routeData.fastest ? '最速ルート未生成（先に「休憩場所検索」を実行）' : null
+  ].filter(Boolean).join(' / ');
+  alert('ルート描画でエラー: ' + (e.message || e) + (hints ? '\nヒント: ' + hints : ''));
+} finally {
         btn.disabled = false;
         btn.textContent = 'このルートを表示';
       }
@@ -1459,12 +1487,25 @@ function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty =
 
   for (let i = 0; i < restGroups.length; i++){
     const g = restGroups[i];
-    const valid = (g?.pois || []).filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+let pois = (g?.pois || []).slice();
 
-    // ★ 候補がある段では null を出さない（未採用分岐を作らない）
-    const cand = valid.length
-      ? (forbidNullWhenCand ? valid : [...valid, null])
-      : [null];
+// ▼ _proj が無い/不完全な POI には、休憩トリガーの routeD を使って暫定射影を付与
+if (pois.length && g?.rest && Number.isFinite(g.rest.routeD)) {
+  pois.forEach(p => {
+    if (!p) return;
+    if (!p._proj || !Number.isFinite(p._proj.cumD)) {
+      p._proj = { cumD: Number(g.rest.routeD), cumT: NaN, cumE: NaN };
+    }
+  });
+}
+
+// ここから先は従来と同じロジック
+const valid = pois.filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+
+const cand = valid.length
+  ? (forbidNullWhenCand ? valid : [...valid, null])
+  : [null];
+
 
     const next = [];
     for (const b of beams){
@@ -1528,6 +1569,16 @@ function greedyTopKCandidates(restGroups, cumTotals, K = 3) {
       groups.push([null]); // 物理的に候補ゼロ
       continue;
     }
+    // ▼ _proj が無い POI には、休憩トリガー距離を暫定で入れて候補落ちを防ぐ
+if (g?.rest && Number.isFinite(g.rest.routeD)) {
+  pois.forEach(p => {
+    if (!p) return;
+    if (!p._proj || !Number.isFinite(p._proj.cumD)) {
+      p._proj = { cumD: Number(g.rest.routeD), cumT: NaN, cumE: NaN };
+    }
+  });
+}
+
 
     // --- 射影値 _proj が無い場合に補完 ---
     const needProj = pois.some(p => p && (!p._proj || !Number.isFinite(p._proj.cumD)));
@@ -1596,7 +1647,89 @@ function ensureProjections() {
   console.log("[ensureProjections] 射影を再計算しました");
 }
 
+function dbgShowCumsAndProjections(){
+  const el = $('dbgCums'); if (!el) return;
+  const t = window.__cumTotals;
+  const counts = (restGroups||[]).map((g,i)=>{
+    const valid = (g?.pois||[]).filter(p=>p && p._proj && Number.isFinite(p._proj.cumD)).length;
+    return `#${i+1}: POI=${(g?.pois||[]).length}, projOK=${valid}`;
+  }).join('\n');
+  el.textContent =
+`cumTotals:
+  D=${t?.D?.toFixed?.(1)} m
+  T=${t?.T?.toFixed?.(1)} s
+  E=${t?.E?.toFixed?.(1)} kJ
+per-trigger candidates:
+${counts || '(none)'}`;
+  console.log("[ensureProjections] 射影を再計算しました");
+  // 追加：各トリガーの有効候補数をログ
+(restGroups||[]).forEach((g,i)=>{
+  const ok = (g?.pois||[]).filter(p=>p && p._proj && Number.isFinite(p._proj.cumD)).length;
+  console.log(`[projOK] trigger#${i+1}: all=${(g?.pois||[]).length}, projOK=${ok}`);
+});
+dbgShowCumsAndProjections();
+}
 
+  
+
+function injectAlgoDebugButtons(cumTotals){
+  // 既に挿入済みならスキップ
+  if (document.getElementById('algoDebugBar')) return;
+  const host = document.getElementById('comboTop3');
+  const bar = document.createElement('div');
+  bar.id = 'algoDebugBar';
+  bar.style.margin = '6px 0 10px';
+  bar.innerHTML = `
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button id="dbgRunGreedy">デバッグ: 等間隔貪欲</button>
+      <button id="dbgRunBeam">デバッグ: ビームサーチ</button>
+      <button id="dbgClear">クリア</button>
+    </div>
+    <pre id="dbgAlgoLog" style="font-family:ui-monospace,monospace;background:#f8f8f8;border:1px solid #eee;padding:6px;white-space:pre-wrap"></pre>
+  `;
+  host.prepend(bar);
+
+  const logEl = document.getElementById('dbgAlgoLog');
+  const log = (s)=>{ logEl.textContent += s + '\n'; };
+
+  document.getElementById('dbgRunGreedy').onclick = ()=>{
+    const K = 3;
+    const candGroups = greedyTopKCandidates(restGroups, cumTotals, K);
+    const combos = enumerateCombinations(candGroups, K, 60);
+    const scored = combos.map(cmb=>{
+      const ev = evalByCums(restGroups, cmb, cumTotals);
+      return {cmb, score:ev.score, stats:ev.stats};
+    }).sort((a,b)=>a.score-b.score).slice(0,3);
+    log('[GREEDY top3]');
+    scored.forEach((r,i)=>{
+      log(`#${i+1}: score=${r.score.toFixed(4)}  segN=${r.stats.dist.length}`);
+    });
+    showTop3Combos(scored.map(s=>({
+  score:s.score, stats:s.stats, picksByTrigger:s.cmb, picks:s.cmb.filter(Boolean)
+})));
+  };
+
+  document.getElementById('dbgRunBeam').onclick = ()=>{
+    const triggersWithCand = (restGroups||[]).reduce((n,g)=>{
+      const valid=(g?.pois||[]).filter(p=>p && p._proj && Number.isFinite(p._proj.cumD));
+      return n + (valid.length?1:0);
+    },0);
+    const top = beamSearch(restGroups, cumTotals, 3, triggersWithCand, 1e6, true);
+    log('[BEAM top3]');
+    top.forEach((r,i)=>{
+      log(`#${i+1}: score=${r.score.toFixed(4)}  segN=${r.stats.dist.length}`);
+    });
+    top.forEach(t=>t.picks = t.picksByTrigger.filter(Boolean));
+    showTop3Combos(top);
+  };
+
+  document.getElementById('dbgClear').onclick = ()=>{
+    logEl.textContent='';
+    document.getElementById('comboTop3').innerHTML='';
+  };
+}
+
+  
 </script>
 </body>
 </html>
