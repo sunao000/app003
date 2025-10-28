@@ -95,6 +95,19 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
         <option value="time">時間</option>
       </select>
     </div>
+
+    <!-- ゴール／既存地点 近接スキップ設定 -->
+<div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px">
+  <label><input type="checkbox" id="skipNearGoalToggle" checked> ゴール手前は休憩を作らない</label>
+  <label>スキップ距離（ゴール手前）
+    <input id="skipNearGoalKm" type="number" value="1.0" min="0" step="0.1"> km
+  </label>
+  <label><input type="checkbox" id="skipNearNodeToggle" checked> 既存地点の近接は休憩を作らない</label>
+  <label>近接判定
+    <input id="skipNearNodeM" type="number" value="150" min="0" step="10"> m
+  </label>
+</div>
+
   </details>
 </div>
 
@@ -645,11 +658,57 @@ async function makeRestPoints(feature,mass,flat){
         const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
         const dE = energyStepKJ(d,dz,mass,flat);
         acc += (basis==='time') ? t : dE;
-        if(acc >= thr){
-          raw.push({lat:coords[i1][1],lon:coords[i1][0],routeD:cumDist[i1]});
-          logRest(`[ACCUM] ${(cumDist[i1]/1000).toFixed(2)} km → HIT`);
-          acc=0;
-        }
+        if (acc >= thr) {
+  const candLat = coords[i1][1];
+  const candLon = coords[i1][0];
+  const hereCum = cumDist[i1];                  // m
+  const totalD  = feature?.properties?.summary?.distance || 0;
+
+  // --- UI値の取得（安全化付き） ---
+  const skipGoalOn  = document.getElementById('skipNearGoalToggle')?.checked ?? false;
+  const skipNodeOn  = document.getElementById('skipNearNodeToggle')?.checked ?? false;
+  const goalKmInput = Number(document.getElementById('skipNearGoalKm')?.value);
+  const nodeMInput  = Number(document.getElementById('skipNearNodeM')?.value);
+  const skipGoalKm  = Number.isFinite(goalKmInput) && goalKmInput >= 0 ? goalKmInput : 0;
+  const skipNodeM   = Number.isFinite(nodeMInput)  && nodeMInput  >= 0 ? nodeMInput  : 0;
+
+  // --- スキップ1: ゴール手前（残距離がしきい値未満ならスキップ） ---
+  let shouldSkip = false;
+  if (skipGoalOn && Number.isFinite(totalD) && totalD > 0) {
+    const remainD = totalD - hereCum; // m
+    if (remainD <= skipGoalKm * 1000) {
+      shouldSkip = true;
+      logRest(`[ACCUM] ${(hereCum/1000).toFixed(2)} km → HIT（スキップ: ゴールまで ${(remainD/1000).toFixed(2)} km）`);
+    }
+  }
+
+  // --- スキップ2: 既存地点（スタート/経由/ゴール）に近接していればスキップ ---
+  if (!shouldSkip && skipNodeOn && Array.isArray(pts) && pts.length) {
+    const P = L.latLng(candLat, candLon);
+    // 休憩自動挿入は drawRoutes() 内でこの後に行うので、ここでは
+    // まだ「休憩 isRest=true」の点は存在しない想定。保険として isRest を除外。
+    const near = pts.some(p => {
+      if (!p || p.isRest) return false;
+      const Q = L.latLng(p.lat, p.lon);
+      const d = P.distanceTo(Q); // m
+      return d <= skipNodeM;
+    });
+    if (near) {
+      shouldSkip = true;
+      logRest(`[ACCUM] ${(hereCum/1000).toFixed(2)} km → HIT（スキップ: 既存地点に ${skipNodeM}m 以内）`);
+    }
+  }
+
+  // --- 採用 or スキップ ---
+  if (!shouldSkip) {
+    raw.push({ lat: candLat, lon: candLon, routeD: hereCum });
+    logRest(`[ACCUM] ${(hereCum/1000).toFixed(2)} km → HIT`);
+  }
+
+  // 閾値到達の判定はここで一旦リセット（次ターゲットへ）
+  acc = 0;
+}
+
       }
     }
   }
@@ -1869,3 +1928,4 @@ function dpSearch(restGroups, cumTotals){
 </script>
 </body>
 </html>
+
