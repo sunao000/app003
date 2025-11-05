@@ -83,11 +83,11 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
     </div>
 
     <div style="margin-top:6px">
-      <label><input type="checkbox" id="optAccum" checked> 積算トリガ</label><br>
+      <label><input type="checkbox" id="optAccum"> 積算トリガ</label><br>
       <label><input type="checkbox" id="optStatTrigger"> 統計トリガ</label>
       平均 <input id="statMean" type="number" value="20" step="1">km
       分散 <input id="statVar" type="number" value="9" step="0.5">km²<br>
-      <label><input type="checkbox" id="optPercentTrigger"> 割合トリガ</label>
+      <label><input type="checkbox" id="optPercentTrigger" checked> 割合トリガ</label>
       %ごと <input id="percentStep" type="number" value="25" step="1"> %
       <select id="percentMetric">
         <option value="distance">距離</option>
@@ -95,7 +95,7 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
         <option value="time">時間</option>
       </select>
     </div>
-
+    
     <!-- ゴール／既存地点 近接スキップ設定 -->
 <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px">
   <label><input type="checkbox" id="skipNearGoalToggle" checked> ゴール手前は休憩を作らない</label>
@@ -159,6 +159,17 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 
 <!-- ルート検索アルゴリズム -->
+<!-- 直線距離（全組み合わせ） -->
+<div class="section">
+  <h3>直線距離（全組み合わせ）</h3>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+    <button id="btnCalcLinear">直線距離を計算（1トリガー1件 × 全組合せ）</button>
+    <button id="btnDownloadLinearCsv" disabled>CSVダウンロード</button>
+  </div>
+  <div id="linearSummary" style="font-size:0.9rem;color:#555"></div>
+  <div id="linearList" style="font-family:ui-monospace,monospace;white-space:pre;max-height:260px;overflow:auto;border:1px solid #eee;padding:6px"></div>
+</div>
+
 <div class="section">
   <label>探索アルゴリズム
     <select id="algoSelect">
@@ -170,6 +181,30 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </label>
   <small style="color:#666;margin-left:8px">※総当たりはAPI制限に注意</small>
 </div>
+
+<!-- 評価ウェイト（整列/直交/トリガー距離） -->
+<div class="section" id="scoreWeightsSection">
+  <details open>
+    <summary>評価ウェイト（整列/直交/トリガー距離）</summary>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+      <label>整列（経路上の累積距離ずれ）
+        <input id="wAlign" type="number" step="0.1" min="0" value="1.0" style="width:86px">
+      </label>
+      <label>直交（経路からの垂直距離）
+        <input id="wPerp" type="number" step="0.1" min="0" value="1.0" style="width:86px">
+      </label>
+      <label>トリガー距離（休憩トリガ点からの距離）
+        <input id="wTrig" type="number" step="0.1" min="0" value="0.5" style="width:86px">
+      </label>
+      <button id="btnWeightsReset" style="margin-left:4px">デフォルトに戻す</button>
+    </div>
+    <small style="color:#666;display:block;margin-top:6px">
+      値が大きいほど<strong>その誤差を強くペナルティ</strong>します（=候補が選ばれにくくなります）。
+      値を0にすると、その軸のペナルティは無効化されます。
+    </small>
+  </details>
+</div>
+
 
 
 <!-- サマリー -->
@@ -226,6 +261,62 @@ function formatDur(s){const m=Math.round(s/60);return m<60? m+' 分' : (Math.flo
 
 /* ====== 初期化 ====== */
 window.addEventListener('DOMContentLoaded',()=>{
+  /* ===== 評価ウェイト UI 初期化 ===== */
+  function reflectWeightsToInputs(){
+    const WA = document.getElementById('wAlign');
+    const WP = document.getElementById('wPerp');
+    const WT = document.getElementById('wTrig');
+    if(!WA || !WP || !WT) return;
+    WA.value = String(SCORE_WEIGHTS.wAlign);
+    WP.value = String(SCORE_WEIGHTS.wPerp);
+    WT.value = String(SCORE_WEIGHTS.wTrig);
+  }
+
+  function saveWeights(){
+    localStorage.setItem('route_score_weights', JSON.stringify(SCORE_WEIGHTS));
+  }
+
+  function bindWeightsUI(){
+    const WA = document.getElementById('wAlign');
+    const WP = document.getElementById('wPerp');
+    const WT = document.getElementById('wTrig');
+    const RB = document.getElementById('btnWeightsReset');
+
+    if(WA){
+      WA.addEventListener('input', ()=>{
+        const v = Number(WA.value);
+        SCORE_WEIGHTS.wAlign = Number.isFinite(v) && v>=0 ? v : 0;
+        saveWeights();
+      });
+    }
+    if(WP){
+      WP.addEventListener('input', ()=>{
+        const v = Number(WP.value);
+        SCORE_WEIGHTS.wPerp = Number.isFinite(v) && v>=0 ? v : 0;
+        saveWeights();
+      });
+    }
+    if(WT){
+      WT.addEventListener('input', ()=>{
+        const v = Number(WT.value);
+        SCORE_WEIGHTS.wTrig = Number.isFinite(v) && v>=0 ? v : 0;
+        saveWeights();
+      });
+    }
+    if(RB){
+      RB.addEventListener('click', ()=>{
+        SCORE_WEIGHTS = { wAlign:1.0, wPerp:1.0, wTrig:0.5 };
+        saveWeights();
+        reflectWeightsToInputs();
+      });
+    }
+  }
+
+  // ページ読み込み時に反映＆バインド
+  reflectWeightsToInputs();
+  bindWeightsUI();
+
+  
   map=L.map('map').setView([34.07,134.55],11);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
               {attribution:'©OpenStreetMap'}).addTo(map);
@@ -342,8 +433,11 @@ if (algo === 'beam3'){
         try {
           // ORS で実際の経路を引いて、既存の calcLegStats でレグ統計を算出
           const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
-          const score = comboScore(stats); // 距離/時間/エネの標準偏差の合計
-          results.push({ score, feature, picks, picksByTrigger: cmb, stats });
+          const rawScore = comboScore(stats); // 距離/時間/エネの標準偏差の合計
+       const weights  = picks.map(p => Number(p?._w) || 1);
+       const meanW    = weights.length ? (weights.reduce((a,b)=>a+b,0)/weights.length) : 1;
+       const score    = rawScore / Math.max(0.1, meanW); // 重みが高い組合せを優遇
+       results.push({ score, rawScore, feature, picks, picksByTrigger: cmb, stats });
         } catch(e){
           console.warn('combo route fail', e);
           // 失敗した組合せはスキップ
@@ -533,7 +627,9 @@ async function drawRoutes(){
     /* ===== 休憩地点挿入 ===== */
     const mass = 75; // 体重+バイク質量(例)
     const flat = 18; // 平坦係数
-    const rests = await makeRestPoints(routeData.fastest, mass, flat);
+    const baseFeature = routeData.arterial || routeData.fastest;
+    const rests = await makeRestPoints(baseFeature, mass, flat);
+
     restGroups = (rests || []).map(r => ({ rest: r, pois: [] }));
 
     restList = []; // 前回のリストをリセット
@@ -599,9 +695,11 @@ if ($('poiToggle').checked) {
 
     }
 
-    // デフォルト表示は最速
-    showSingleRoute('fastest', true);
-    setActiveButton($('btnShowFastest'));
+// デフォルト表示は幹線優先（なければ最速）
+const prefer = routeData.arterial ? 'arterial' : 'fastest';
+showSingleRoute(prefer, true);
+setActiveButton(prefer === 'arterial' ? $('btnShowArterial') : $('btnShowFastest'));
+
 
     // 区間統計を表示
     await showRouteLegSummary();
@@ -638,6 +736,15 @@ async function totalEnergyKJ(feature,mass,flat){
 async function makeRestPoints(feature,mass,flat){
   const coords=feature.geometry.coordinates;
   const segs=(feature.properties.segments||[]);
+    // 旅全体の合計（距離は既存の totalDist 代わりに summary.distance を利用）
+  const totalD = feature?.properties?.summary?.distance || 0;        // m
+  const totalT = feature?.properties?.summary?.duration || 0;        // s
+  const totalE = await totalEnergyKJ(feature, mass, flat);           // kJ
+
+  // 現在位置までの累積（秒 / kJ）— 各stepで足していく
+  let cumTsec = 0;   // s
+  let cumEkJ  = 0;   // kJ
+  
   const hasEle = coords[0].length>=3;
   const cumDist=[0];
   for(let i=1;i<coords.length;i++){
@@ -657,6 +764,9 @@ async function makeRestPoints(feature,mass,flat){
         const d=st.distance||0, t=st.duration||0;
         const dz = hasEle ? ((coords[i1][2]||0)-(coords[i0][2]||0)) : 0;
         const dE = energyStepKJ(d,dz,mass,flat);
+        // ★ 累積（秒 / kJ）を更新
+        cumTsec += t;
+        cumEkJ  += dE;
         acc += (basis==='time') ? t : dE;
         if (acc >= thr) {
   const candLat = coords[i1][1];
@@ -678,7 +788,13 @@ async function makeRestPoints(feature,mass,flat){
     const remainD = totalD - hereCum; // m
     if (remainD <= skipGoalKm * 1000) {
       shouldSkip = true;
-      logRest(`[ACCUM] ${(hereCum/1000).toFixed(2)} km → HIT（スキップ: ゴールまで ${(remainD/1000).toFixed(2)} km）`);
+            const remainD = totalD - hereCum;           // m
+      const remainT = Math.max(0, totalT - cumTsec); // s
+      const remainE = Math.max(0, totalE - cumEkJ);  // kJ
+
+      shouldSkip = true;
+      logRest(`[ACCUM] ${(hereCum/1000).toFixed(2)} km → HIT（スキップ: ゴールまで ${(remainD/1000).toFixed(2)} km / ${formatDur(remainT)} / ${remainE.toFixed(0)} kJ）`);
+
     }
   }
 
@@ -1200,13 +1316,17 @@ function updateRestPoiPanel(){
       ul.appendChild(x);
     } else {
       g.pois.forEach((p) => {
-        const it = document.createElement('li');
-        it.style.padding = '2px 0';
-        const dTrigger = (typeof p.distFromTriggerM === 'number') ? ` / トリガー距離 ${formatDist(p.distFromTriggerM)}` : '';
-        const dPerp = (p._proj && typeof p._proj.perpM === 'number') ? ` / ルート⊥ <b>${formatDist(p._proj.perpM)}</b>` : '';
-        it.textContent = `・${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}${dTrigger}${dPerp}`;
-        ul.appendChild(it);
-      });
+  const it = document.createElement('li');
+  it.style.padding = '2px 0';
+  const dTrigger = (typeof p.distFromTriggerM === 'number')
+    ? ` / トリガー距離 ${formatDist(p.distFromTriggerM)}`
+    : '';
+  const dPerp = (p._proj && typeof p._proj.perpM === 'number')
+    ? ` / ルート⊥ <b>${formatDist(p._proj.perpM)}</b>`
+    : '';
+  it.innerHTML = `・${p.name}　${p.lat.toFixed(5)}　${p.lon.toFixed(5)}${dTrigger}${dPerp}`;
+  ul.appendChild(it);
+});
     }
 
     li.appendChild(ul);
@@ -1272,6 +1392,7 @@ function showTop3Combos(resultList){
     header.innerHTML = `
       <div style="font-weight:700;margin-bottom:4px">
         #${rank}　スコア（σ合計）: ${(sd(r.stats.dist)+sd(r.stats.time)+sd(r.stats.energy)).toFixed(3)}
+        ${typeof r.rawScore === 'number' ? `<span style="color:#777">（総当たり: 補正後=${r.score.toFixed(3)} / 素=${r.rawScore.toFixed(3)}）</span>` : ''}
       </div>
       <div style="margin-top:4px">
         距離σ=${sd(r.stats.dist).toFixed(2)} km　
@@ -1391,7 +1512,22 @@ function showTop3Combos(resultList){
 }
 
 /* ===== スコアリング（POI評価） ===== */
-const SCORE_WEIGHTS = { wAlign: 1.0, wPerp: 1.0, wTrig: 0.5 };
+// ローカルストレージから復元（無ければデフォルト）
+let SCORE_WEIGHTS = (()=>{
+  try{
+    const raw = localStorage.getItem('route_score_weights');
+    if(!raw) return { wAlign:1.0, wPerp:1.0, wTrig:0.5 };
+    const obj = JSON.parse(raw);
+    // 不足キーは補完
+    return {
+      wAlign: Number.isFinite(obj?.wAlign) ? obj.wAlign : 1.0,
+      wPerp:  Number.isFinite(obj?.wPerp)  ? obj.wPerp  : 1.0,
+      wTrig:  Number.isFinite(obj?.wTrig)  ? obj.wTrig  : 0.5,
+    };
+  }catch(e){
+    return { wAlign:1.0, wPerp:1.0, wTrig:0.5 };
+  }
+})();
 
 function targetCumDForIndex(i, R, totalD){
   if (!Number.isFinite(totalD) || totalD<=0) return 0;
@@ -1403,13 +1539,236 @@ function nodeCost(p, targetCumD){
   const perpM   = Number(p?._proj?.perpM) ?? 0;
   const trigM   = Number(p?.distFromTriggerM) ?? 0;
   const alignM  = Math.abs((Number(p?._proj?.cumD) ?? targetCumD) - targetCumD);
-  return (SCORE_WEIGHTS.wAlign * (alignM/1000)) +
-         (SCORE_WEIGHTS.wPerp  * (perpM/1000))  +
-         (SCORE_WEIGHTS.wTrig  * (trigM/1000));
+return (SCORE_WEIGHTS.wAlign * (alignM/1000)) +
+       (SCORE_WEIGHTS.wPerp  * (perpM/1000))  +
+       (SCORE_WEIGHTS.wTrig  * (trigM/1000));
 }
 
 
 /* ===== 組み合わせルート探索＆評価ユーティリティ ===== */
+
+/* ===== 直線距離: 全組み合わせ（各トリガーで1件） ===== */
+
+// スタート/ゴール取得（保険つき）
+function getStartGoalPoints(){
+  const start = pts.find(p=>p.type==='start') || pts[0];
+  const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
+  if(!start || !goal) throw new Error('スタート/ゴールが見つかりません');
+  return {start, goal};
+}
+
+// POI群（各トリガー）から「最大5件だけ」取り出す（射影が無くてもOK）
+function topPoisPerTriggerForLinear(maxPer=5){
+  if(!Array.isArray(restGroups) || !restGroups.length) throw new Error('休憩トリガーがありません');
+  // とりあえず「トリガーからの距離 + ルート直交距離」の小さい順で切り出し（無ければある情報だけ）
+  return restGroups.map((g,i)=>{
+    const arr = (g?.pois || []).slice();
+    // 「候補なし」のトリガーがあると組み合わせが成立しないので、ここで弾く
+    if(!arr.length) throw new Error(`トリガー#${i+1} に候補POIがありません`);
+    const score = p=>{
+      const a = Number(p?.distFromTriggerM) || 0;
+      const b = Number(p?._proj?.perpM) || 0;
+      return a + b;
+    };
+    arr.sort((x,y)=> score(x)-score(y));
+    return arr.slice(0, Math.max(1, Math.min(maxPer, arr.length)));
+  });
+}
+
+// 2点間の地上距離（m）
+function llDist(a,b){
+  return L.latLng(a.lat, a.lon).distanceTo([b.lat, b.lon]);
+}
+
+// ある組み合わせ（picks: 各トリガーで1件）に対し、
+// start -> picks[0] -> picks[1] -> ... -> goal の直線合計距離（m）を返す
+function comboLinearDistanceMeters(start, picks, goal){
+  let sum = 0;
+  let prev = start;
+  for(const p of picks){
+    sum += llDist(prev, p);
+    prev = p;
+  }
+  sum += llDist(prev, goal);
+  return sum;
+}
+
+// 全組み合わせを列挙（各トリガー1件必ず選ぶ）
+function enumerateAllOnePerTrigger(groups, hardCap=200000){
+  // groups は [ [p,p,p...], [p,p...], ... ]
+  const out = [];
+  const idx = new Array(groups.length).fill(0);
+  const lens = groups.map(g=>g.length);
+  let total = lens.reduce((a,b)=>a*b,1);
+  if(total>hardCap) total = hardCap; // 爆発防止
+
+  for(let n=0; n<total; n++){
+    // 現在の選択を push
+    out.push(groups.map((g,i)=> g[idx[i]]));
+    // 次の組み合わせへ
+    for(let i=groups.length-1;i>=0;i--){
+      idx[i]++;
+      if(idx[i] < lens[i]) break;
+      idx[i]=0;
+      if(i===0) return out; // 全探索完了
+    }
+  }
+  return out;
+}
+
+// 表示とCSV出力
+function renderLinearResults(rows){
+  const cont = document.getElementById('linearList');
+  const sum  = document.getElementById('linearSummary');
+  if(!cont || !sum) return;
+
+  // --- 上位3件のみ表示 ---
+  const SHOW = 3;
+  const shown = rows.slice(0, SHOW);
+
+  // CSV全件は保持（UIは3件）
+  window.__linear_rows_for_csv = rows;
+  const csvBtn = document.getElementById('btnDownloadLinearCsv');
+  if(csvBtn) csvBtn.disabled = rows.length===0;
+
+  cont.innerHTML = ''; // カード表示に変更
+  shown.forEach((r, i) => {
+    const rank = i + 1;
+    const names = r.picks.map(p=> p?.name || 'POI').join(' → ');
+
+    const wrap = document.createElement('div');
+    wrap.style.border = '1px solid #ddd';
+    wrap.style.borderRadius = '8px';
+    wrap.style.padding = '8px';
+    wrap.style.marginBottom = '8px';
+    wrap.style.fontFamily = 'system-ui,ui-sans-serif';
+
+    const head = document.createElement('div');
+    head.style.fontWeight = '700';
+    head.style.marginBottom = '4px';
+    head.textContent = `#${rank}  合計直線距離: ${r.km.toFixed(2)} km`;
+    wrap.appendChild(head);
+
+    const meta = document.createElement('div');
+    meta.style.color = '#555';
+    meta.style.fontSize = '0.92rem';
+    meta.textContent = `idx=${JSON.stringify(r.idxes)} | ${names}`;
+    wrap.appendChild(meta);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.marginTop = '6px';
+
+    const btn = document.createElement('button');
+    btn.textContent = 'この組み合わせでルート表示';
+    btn.onclick = async () => {
+      btn.disabled = true;
+      const oldTxt = btn.textContent;
+      btn.textContent = '生成中…';
+      try {
+        await showLinearComboRoute(r);   // ← 下の新関数で描画
+      } catch (e) {
+        const hints = [
+          !ORS_KEY ? 'ORS_KEY 未設定' : null,
+          !(pts && pts.length>=2) ? 'Start/Goal 未設定' : null
+        ].filter(Boolean).join(' / ');
+        alert('ルート描画に失敗: ' + (e.message || e) + (hints ? '\nヒント: ' + hints : ''));
+        console.error(e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = oldTxt;
+      }
+    };
+    btnRow.appendChild(btn);
+    wrap.appendChild(btnRow);
+
+    cont.appendChild(wrap);
+  });
+
+  const msg = `総組合せ数: ${rows.length.toLocaleString()} 件（上位 ${Math.min(SHOW, rows.length)} 件を表示／CSVは全件出力可能）`;
+  sum.textContent = msg;
+}
+
+function downloadLinearCsv(){
+  const rows = window.__linear_rows_for_csv || [];
+  if(!rows.length) return;
+
+  // CSV行を作る（ダブルクォートでエスケープ）
+  const esc = s => String(s).replace(/"/g,'""');
+  const header = ['rank','total_km','indices_per_trigger','poi_names'];
+  const lines = [header.join(',')];
+
+  rows.forEach((r,i)=>{
+    const names = r.picks.map(p=> (p?.name ?? 'POI')).join(' -> ');
+    lines.push([
+      i+1,
+      r.km.toFixed(3),
+      `"${esc(JSON.stringify(r.idxes))}"`,
+      `"${esc(names)}"`
+    ].join(','));
+  });
+
+  // 重要：UTF-8 BOM を先頭に付ける + CRLF 改行（Excel対策）
+  const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+  const csv = lines.join('\r\n');
+  const blob = new Blob([bom, csv], { type: 'text/csv;charset=utf-8' });
+
+  const url  = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'linear_combinations.csv';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 500);
+}
+
+
+// ボタン動作：計算 → 並べ替え → 表示
+function bindLinearButtonsOnce(){
+  const calcBtn = document.getElementById('btnCalcLinear');
+  const csvBtn  = document.getElementById('btnDownloadLinearCsv');
+  if(!calcBtn) return;
+  if(calcBtn.__bound) return; // 二重バインド防止
+  calcBtn.__bound = true;
+
+  calcBtn.onclick = ()=>{
+    try{
+      const {start, goal} = getStartGoalPoints();
+      const groups = topPoisPerTriggerForLinear(5); // 各トリガー最大5件
+      // 総組合せチェック（多すぎる場合は注意だけ出す）
+      const total = groups.reduce((a,b)=>a*b.length,1);
+      if(total > 200000){
+        if(!confirm(`組合せが ${total.toLocaleString()} 件あります。上限20万件まで計算します。続行しますか？`)) return;
+      }
+      const combos = enumerateAllOnePerTrigger(groups, /*hardCap*/200000);
+
+      // 距離計算
+      const rows = combos.map(idxPicks=>{
+        const meters = comboLinearDistanceMeters(start, idxPicks, goal);
+        return {
+          meters,
+          km: meters/1000,
+          picks: idxPicks,
+          idxes: idxPicks.map((p, i)=> groups[i].indexOf(p)) // どのインデックスを選んだか
+        };
+      });
+
+      // 合計距離が短い順にソート
+      rows.sort((a,b)=>a.meters - b.meters);
+
+      renderLinearResults(rows);
+    }catch(e){
+      alert('直線距離計算エラー: ' + (e.message || e));
+      console.error(e);
+    }
+  };
+
+  if(csvBtn){
+    csvBtn.onclick = ()=> downloadLinearCsv();
+  }
+}
+
+// 初期化時にバインド
+window.addEventListener('DOMContentLoaded', bindLinearButtonsOnce);
+
 
 // 休憩トリガーごとに1地点ずつ選ぶ全組み合わせを列挙（上限あり）
 function enumerateCombinations(poiGroups, perGroupLimit = 3, hardCap = 60){
@@ -1710,11 +2069,13 @@ if (g?.rest && Number.isFinite(g.rest.routeD)) {
 }
 
 function ensureProjections() {
+  const base = routeData.arterial || routeData.fastest;
   // ルート情報や休憩グループが存在しない場合は何もしない
-  if (!routeData.fastest || !Array.isArray(restGroups) || !restGroups.length) return;
+  if (!base || !Array.isArray(restGroups) || !restGroups.length) return;
 
   // ルート上の累積データを構築
-  const { cum, coords } = buildCums(routeData.fastest);
+  const { cum, coords } = buildCums(base);
+
   window.__routeCums = { cum, coords };
   window.__cumTotals = {
     D: cum.D.at(-1),
@@ -1923,9 +2284,43 @@ function dpSearch(restGroups, cumTotals){
   return { picksByTrigger: picks, stats: ev.stats, score: ev.score };
 }
 
+// 上位3件カードの「ルート表示」から呼ばれる：実際の経路をORSで引いて地図に描画
+async function showLinearComboRoute(row){
+  if(!row || !Array.isArray(row.picks)) throw new Error('不正な行データ');
+  const {start, goal} = getStartGoalPoints();
+  const profile = document.getElementById('profileSelect')?.value || 'cycling-road';
+
+  // 経由順は「トリガー順の picks をそのまま」
+  const wps = [start, ...row.picks, goal].map(p=>({
+    lat: p.lat, lon: p.lon, name: p.name || 'POI'
+  }));
+
+  // ORSでルート生成（既存ヘルパを再利用）
+  const out = await routeLegStatsForWaypoints(wps, profile);
+  const feature = out?.feature;
+  if(!feature) throw new Error('ORS ルート生成に失敗しました');
+
+  // 既存レイヤをクリアして描画
+  clearRouteLayers();
+  const layer = L.geoJSON(feature, { style:{ color:'#0096ff', weight:7 } }).addTo(map);
+  routeLayers['linearTopRoute'] = layer;
+
+  // 採用POI＆Start/Goalのマーカーを設定（既存関数）
+  setComboMarkers(start, row.picks, goal);
+
+  // 収まり調整
+  if (layer.getBounds && layer.getBounds().isValid && layer.getBounds().isValid()){
+    map.fitBounds(layer.getBounds().pad(0.1));
+  }
+
+  // ルート切替ボタンの「選択状態」をクリア
+  setActiveButton(null);
+}
 
   
 </script>
 </body>
 </html>
+
+
 
