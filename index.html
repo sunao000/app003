@@ -218,6 +218,22 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </details>
 </div>
 
+<!-- ▼▼ スコア指標セレクタを追加 ▼▼ -->
+<div class="section" id="scoreMetricSection">
+  <details open>
+    <summary>スコア指標（どれか1つで評価）</summary>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <label>評価する指標
+        <select id="scoreMetricSelect">
+          <option value="distance" selected>距離σ（km）</option>
+          <option value="time">時間σ（分）</option>
+          <option value="energy">エネルギーσ（kJ）</option>
+        </select>
+      </label>
+      <small style="color:#666">※上位3件の「スコア」はここで選んだ1指標の標準偏差です。</small>
+    </div>
+  </details>
+</div>
 
 
 <!-- サマリー -->
@@ -321,6 +337,17 @@ window.addEventListener('DOMContentLoaded',()=>{
     WP.value = String(SCORE_WEIGHTS.wPerp);
     WT.value = String(SCORE_WEIGHTS.wTrig);
   }
+
+  // ▼ スコア指標セレクタの初期化
+const sm = document.getElementById('scoreMetricSelect');
+if (sm) {
+  sm.value = SCORE_METRIC;             // 保存済みの選択を反映
+  sm.addEventListener('change', ()=>{  // 変更時に保存
+    setScoreMetric(sm.value);
+    // ※必要なら直近結果の再表示を呼ぶ（例：最後のトップ3を作り直す等）
+  });
+}
+
 
   function saveWeights(){
     localStorage.setItem('route_score_weights', JSON.stringify(SCORE_WEIGHTS));
@@ -1522,17 +1549,34 @@ if(last){
     wrap.style.marginBottom='8px';
 
     const header = document.createElement('div');
-    header.innerHTML = `
-      <div style="font-weight:700;margin-bottom:4px">
-        #${rank}　スコア（σ合計）: ${(sd(r.stats.dist)+sd(r.stats.time)+sd(r.stats.energy)).toFixed(3)}
-        ${typeof r.rawScore === 'number' ? `<span style="color:#777">（総当たり: 補正後=${r.score.toFixed(3)} / 素=${r.rawScore.toFixed(3)}）</span>` : ''}
-      </div>
-      <div style="margin-top:4px">
-        距離σ=${sd(r.stats.dist).toFixed(2)} km　
-        時間σ=${sd(r.stats.time).toFixed(2)} 分　
-        エネルギーσ=${sd(r.stats.energy).toFixed(2)} kJ
-      </div>
-    `;
+    const metric = getScoreMetric();
+const sig = {
+  dist: sd(r.stats.dist),
+  time: sd(r.stats.time),
+  energy: sd(r.stats.energy)
+};
+const metricLabel = (metric === 'time') ? '時間σ'
+                  : (metric === 'energy') ? 'エネルギーσ'
+                  : '距離σ';
+const metricValue = (metric === 'time') ? sig.time
+                   : (metric === 'energy') ? sig.energy
+                   : sig.dist;
+
+header.innerHTML = `
+  <div style="font-weight:700;margin-bottom:4px">
+    #${rank}　スコア（${metricLabel}）: ${metricValue.toFixed(3)}
+    ${typeof r.rawScore === 'number'
+      ? `<span style="color:#777">（総当たり: 補正後=${r.score.toFixed(3)} / 素=${r.rawScore.toFixed(3)}）</span>`
+      : ''
+    }
+  </div>
+  <div style="margin-top:4px">
+    距離σ=${sig.dist.toFixed(2)} km　
+    時間σ=${sig.time.toFixed(2)} 分　
+    エネルギーσ=${sig.energy.toFixed(2)} kJ
+  </div>
+`;
+
     wrap.appendChild(header);
 
     const list = document.createElement('div');
@@ -1661,6 +1705,18 @@ let SCORE_WEIGHTS = (()=>{
     return { wAlign:1.0, wPerp:1.0, wTrig:0.5 };
   }
 })();
+  /* ===== スコア指標（distance|time|energy） ===== */
+let SCORE_METRIC = (localStorage.getItem('route_score_metric') || 'distance');
+
+function getScoreMetric(){
+  const sel = document.getElementById('scoreMetricSelect');
+  return sel ? sel.value : SCORE_METRIC;
+}
+function setScoreMetric(v){
+  SCORE_METRIC = v;
+  localStorage.setItem('route_score_metric', v);
+}
+
 
 function targetCumDForIndex(i, R, totalD){
   if (!Number.isFinite(totalD) || totalD<=0) return 0;
@@ -1920,10 +1976,16 @@ function enumerateCombinations(poiGroups, perGroupLimit = 3, hardCap = 60){
 
 // スコア（小さいほど良い）：距離/時間/エネルギーの標準偏差の合計
 function comboScore(legStats){
-  const sd = (a)=>{ if(!a.length) return 0; const m=a.reduce((x,y)=>x+y,0)/a.length; 
-    return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length); };
-  return sd(legStats.dist)+sd(legStats.time)+sd(legStats.energy);
+  const sd = (a)=>{ if(!a.length) return 0;
+    const m=a.reduce((x,y)=>x+y,0)/a.length;
+    return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length);
+  };
+  const metric = getScoreMetric();
+  if (metric === 'time')   return sd(legStats.time);
+  if (metric === 'energy') return sd(legStats.energy);
+  return sd(legStats.dist); // default: distance
 }
+
 
 // 組み合わせルートのレグ統計を取得（ORS呼び出し）
 async function routeLegStatsForWaypoints(wps, profile){
@@ -1977,12 +2039,11 @@ function projectToRoute(lat,lon, coords, cum){
 
 // picksByTrigger（各トリガーの選択）を累積から評価（ゼロAPI）
 function evalByCums(restGroups, picksByTrigger, cumTotals){
-  // 1) トータルのサニタイズ
   const totalD = Number(cumTotals?.D) || 0;   // m
   const totalT = Number(cumTotals?.T) || 0;   // s
   const totalE = Number(cumTotals?.E) || 0;   // kJ
 
-  // 2) 区切り（cuts）作成：start(0) → 各pickの累積距離 → goal(totalD)
+  // 休憩分割による「区切り」を累積距離で作る
   const cuts = [0];
   (picksByTrigger || []).forEach(p => {
     const v = Number(p?._proj?.cumD);
@@ -1990,7 +2051,7 @@ function evalByCums(restGroups, picksByTrigger, cumTotals){
   });
   if (totalD > 0) cuts.push(totalD);
 
-  // 3) 区間距離配列（km）
+  // 区間距離（km）
   const dist = [];
   if (cuts.length >= 2){
     cuts.sort((a,b)=>a-b);
@@ -2000,7 +2061,7 @@ function evalByCums(restGroups, picksByTrigger, cumTotals){
     }
   }
 
-  // 4) 区間時間/エネルギーを距離比で近似配分（分母0なら均等割り）
+  // 区間時間/エネルギーは距離比分配（総量が0なら均等割）
   const time = [], energy = [];
   if (dist.length){
     if (totalD > 0 && Number.isFinite(totalD)){
@@ -2010,18 +2071,17 @@ function evalByCums(restGroups, picksByTrigger, cumTotals){
         energy.push(totalE * (Number.isFinite(ratio)? ratio : 0));    // kJ
       }
     } else {
-      // 総距離が0/未定義でも NaN にしない：均等割りにする
-      const eqT = (totalT/60) / dist.length; // 分
-      const eqE = (totalE) / dist.length;    // kJ
+      const eqT = (totalT/60) / dist.length;
+      const eqE = (totalE) / dist.length;
       for (let i=0;i<dist.length;i++){ time.push(eqT||0); energy.push(eqE||0); }
     }
   }
 
-  // 5) NaN/∞ を弾く安全化
+  // 安全化
   const finite = a => a.filter(x => Number.isFinite(x));
   const distF = finite(dist), timeF = finite(time), energyF = finite(energy);
 
-  // 6) σ計算（空配列でも落ちない）
+  // 標準偏差
   const sd = (a) => {
     if (!a.length) return 0;
     const m = a.reduce((s,v)=>s+v,0) / a.length;
@@ -2029,9 +2089,17 @@ function evalByCums(restGroups, picksByTrigger, cumTotals){
     return Math.sqrt(v);
   };
 
-  const score = sd(distF) + sd(timeF) + sd(energyF);
-  return { stats: { dist: distF, time: timeF, energy: energyF }, score: Number.isFinite(score)? score : 0 };
+  // ★ 単一指標スコア（UIの選択に従う）
+  const metric = getScoreMetric();
+  const sigmas = { dist: sd(distF), time: sd(timeF), energy: sd(energyF) };
+  const score =
+      metric === 'time'   ? sigmas.time
+    : metric === 'energy' ? sigmas.energy
+    :                       sigmas.dist;   // default: distance
+
+  return { stats: { dist: distF, time: timeF, energy: energyF }, score, sigma: sigmas };
 }
+
 /* ===== 共通ユーティリティ：候補検査＆未採用の強制補修 ===== */
 
 /* ===== 共通ユーティリティ：候補検査＆未採用の強制補修 ===== */
@@ -2454,6 +2522,7 @@ async function showLinearComboRoute(row){
 </script>
 </body>
 </html>
+
 
 
 
