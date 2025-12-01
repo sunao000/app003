@@ -374,6 +374,307 @@ function stdDev(arr){
   return Math.sqrt(v);
 }
 
+/* ===== スコア計算・評価関連 ===== */
+// ここに comboScore 関連 / SCORE_METRIC / evalByCums など
+// 「ルート評価・スコア算出」を行う関数たちをまとめて置く
+  
+// スコア（小さいほど良い）：距離/時間/エネルギーの標準偏差の合計
+function comboScore(legStats){
+  const sd = (a)=>{ if(!a.length) return 0;
+    const m=a.reduce((x,y)=>x+y,0)/a.length;
+    return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length);
+  };
+  const metric = getScoreMetric();
+  if (metric === 'time')   return sd(legStats.time);
+  if (metric === 'energy') return sd(legStats.energy);
+  return sd(legStats.dist); // default: distance
+}
+
+// picksByTrigger（各トリガーの選択）を累積から評価（ゼロAPI）
+function evalByCums(restGroups, picksByTrigger, cumTotals){
+  const totalD = Number(cumTotals?.D) || 0;   // m
+  const totalT = Number(cumTotals?.T) || 0;   // s
+  const totalE = Number(cumTotals?.E) || 0;   // kJ
+
+  // 休憩分割による「区切り」を累積距離で作る
+  const cuts = [0];
+  (picksByTrigger || []).forEach(p => {
+    const v = Number(p?._proj?.cumD);
+    if (Number.isFinite(v) && v > 0 && v < totalD) cuts.push(v);
+  });
+  if (totalD > 0) cuts.push(totalD);
+
+  // 区間距離（km）
+  const dist = [];
+  if (cuts.length >= 2){
+    cuts.sort((a,b)=>a-b);
+    for (let i=1;i<cuts.length;i++){
+      const d = (Number(cuts[i]) - Number(cuts[i-1])) / 1000; // km
+      if (Number.isFinite(d) && d >= 0) dist.push(d);
+    }
+  }
+
+  // 区間時間/エネルギーは距離比分配（総量が0なら均等割）
+  const time = [], energy = [];
+  if (dist.length){
+    if (totalD > 0 && Number.isFinite(totalD)){
+      for (const d of dist){
+        const ratio = ((d*1000) / totalD); // 0..1
+        time.push((totalT/60) * (Number.isFinite(ratio)? ratio : 0)); // 分
+        energy.push(totalE * (Number.isFinite(ratio)? ratio : 0));    // kJ
+      }
+    } else {
+      const eqT = (totalT/60) / dist.length;
+      const eqE = (totalE) / dist.length;
+      for (let i=0;i<dist.length;i++){ time.push(eqT||0); energy.push(eqE||0); }
+    }
+  }
+
+  // 安全化
+  const finite = a => a.filter(x => Number.isFinite(x));
+  const distF = finite(dist), timeF = finite(time), energyF = finite(energy);
+
+  // 標準偏差
+  const sd = (a) => {
+    if (!a.length) return 0;
+    const m = a.reduce((s,v)=>s+v,0) / a.length;
+    const v = a.reduce((s,v)=>s+(v-m)*(v-m),0) / a.length;
+    return Math.sqrt(v);
+  };
+
+  // ★ 単一指標スコア（UIの選択に従う）
+  const metric = getScoreMetric();
+  const sigmas = { dist: sd(distF), time: sd(timeF), energy: sd(energyF) };
+  const score =
+      metric === 'time'   ? sigmas.time
+    : metric === 'energy' ? sigmas.energy
+    :                       sigmas.dist;   // default: distance
+
+  return { stats: { dist: distF, time: timeF, energy: energyF }, score, sigma: sigmas };
+}
+
+ /* ===== スコア指標（distance|time|energy） ===== */
+let SCORE_METRIC = (localStorage.getItem('route_score_metric') || 'distance');
+
+
+/* ===== 休憩候補組み合わせ探索アルゴリズム群 ===== */
+// 等間隔貪欲 / ビームサーチ / DP / 総当たり などをここに集約
+
+/* ===== 等間隔貪欲法（修正版）: 候補がある場合は必ず採用 ===== */
+function greedyTopKCandidates(restGroups, cumTotals, K = 3) {
+  const R = restGroups.length;
+  const groups = [];
+
+  for (let t = 0; t < R; t++) {
+    const g = restGroups[t];
+    const target = cumTotals.D * (t + 1) / (R + 1); // m（距離基準）
+    let pois = (g && Array.isArray(g.pois)) ? g.pois : [];
+
+    if (!pois.length) {
+      groups.push([null]); // 物理的に候補ゼロ
+      continue;
+    }
+    // ▼ _proj が無い POI には、休憩トリガー距離を暫定で入れて候補落ちを防ぐ
+if (g?.rest && Number.isFinite(g.rest.routeD)) {
+  pois.forEach(p => {
+    if (!p) return;
+    if (!p._proj || !Number.isFinite(p._proj.cumD)) {
+      p._proj = { cumD: Number(g.rest.routeD), cumT: NaN, cumE: NaN };
+    }
+  });
+}
+    // --- 射影値 _proj が無い場合に補完 ---
+    const needProj = pois.some(p => p && (!p._proj || !Number.isFinite(p._proj.cumD)));
+    if (needProj && window.__routeCums) {
+      const { cum, coords } = window.__routeCums;
+      pois.forEach(p => {
+        if (p && (!p._proj || !Number.isFinite(p._proj.cumD))) {
+          p._proj = projectToRoute(p.lat, p.lon, coords, cum);
+        }
+      });
+    }
+
+    // --- 射影値があるものを優先 ---
+    const withProj = pois.filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+    let ranked;
+
+    const base = withProj.length ? withProj : pois;
+ ranked = base
+   .map(p => ({ p, c: nodeCost(p, target) }))
+   .sort((a, b) => a.c - b.c)
+   .slice(0, K)
+   .map(x => x.p);
+
+    // 候補があれば必ず採用。空なら [null]
+    groups.push(ranked.length ? ranked : [null]);
+  }
+
+  return groups;
+}
+
+/* ===== ビームサーチ（ゼロAPI）：候補ありは必採用＋未採用補修 ===== */
+function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty = 1e6, forbidNullWhenCand = true) {
+  // beams 要素: { picks: [...(p or null)], score, pickedCount }
+  let beams = [{ picks: [], score: 0, pickedCount: 0 }];
+
+  for (let i = 0; i < restGroups.length; i++){
+    const g = restGroups[i];
+let pois = (g?.pois || []).slice();
+
+// ▼ _proj が無い/不完全な POI には、休憩トリガーの routeD を使って暫定射影を付与
+if (pois.length && g?.rest && Number.isFinite(g.rest.routeD)) {
+  pois.forEach(p => {
+    if (!p) return;
+    if (!p._proj || !Number.isFinite(p._proj.cumD)) {
+      p._proj = { cumD: Number(g.rest.routeD), cumT: NaN, cumE: NaN };
+    }
+  });
+}
+
+// ここから先は従来と同じロジック
+const valid = pois.filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
+const totalD = Number(cumTotals?.D) || 0;
+const target = targetCumDForIndex(i, restGroups.length, totalD);
+valid.sort((a,b)=> nodeCost(a, target) - nodeCost(b, target));
+
+const cand = valid.length
+  ? (forbidNullWhenCand ? valid : [...valid, null])
+  : [null];
+
+
+    const next = [];
+    for (const b of beams){
+      for (const p of cand){
+        const picks = b.picks.concat([p]);
+
+        // ゼロAPI近似評価
+        const ev = evalByCums(restGroups, picks, cumTotals);
+        let s = ev.score;
+
+        // ★ 候補があるのに null を選んだ場合は強ペナルティ
+        if (p === null && valid.length){
+          s += nullPenalty;
+        }
+
+        next.push({
+          picks,
+          score: Number.isFinite(s) ? s : 0,
+          pickedCount: b.pickedCount + (p ? 1 : 0)
+        });
+      }
+    }
+
+    // スコア上位 width 件のみ保持
+    next.sort((a,b)=>a.score - b.score);
+    beams = next.slice(0, width);
+  }
+
+  // ★ 最低採用数の制約（候補があるトリガー分を採用）
+  let final = beams.filter(b => b.pickedCount >= minRest);
+  if (!final.length) final = beams;
+
+  // ★ 未採用(null)の“補修”をかけてから最終スコア再計算
+  final = final.map(b => {
+    const fixedPicks = repairNullPicks(restGroups, cumTotals, b.picks);
+    const ev = evalByCums(restGroups, fixedPicks, cumTotals);
+    return {
+      picksByTrigger: fixedPicks,  // ← 修正後の picks を返す（以後の表示は必ず採用表示になる）
+      score: ev.score,
+      stats: ev.stats
+    };
+  }).sort((a,b)=>a.score - b.score);
+
+  return final.slice(0, 3);
+}
+
+/* ===== DP（層グラフ最短路） ===== */
+// restGroups: [{rest, pois:[p...]}, ...], cumTotals: {D,T,E}
+function dpSearch(restGroups, cumTotals){
+  const R = restGroups.length;
+  const totalD = Number(cumTotals?.D) || 0;
+
+  // 各層の候補（_proj が無いものは routeD で暫定補完）
+  const layers = restGroups.map((g, i) => {
+    let pois = (g?.pois || []).slice();
+    if (g?.rest && Number.isFinite(g.rest.routeD)) {
+      pois.forEach(p => {
+        if (!p._proj || !Number.isFinite(p._proj.cumD)) {
+          p._proj = { cumD: Number(g.rest.routeD), perpM: Number(p.distFromTriggerM)||0 };
+        }
+      });
+    }
+    // 等間隔ターゲットに対する単点コスト（並べ替えにも使う）
+    const target = targetCumDForIndex(i, R, totalD);
+    pois.sort((a,b)=> nodeCost(a, target) - nodeCost(b, target));
+    return pois;
+  });
+
+  // DPテーブル
+  // dp[i][j] = 第i層で j番目POIを選んだ時の最小コスト
+  // prev[i][j] = 一つ前の層のインデックス
+  const dp = [], prev = [];
+  for (let i=0;i<R;i++) { dp[i] = []; prev[i] = []; }
+
+  // 初期化：スタート→第0層の各POIのコスト（単点コストのみ）
+  const t0 = targetCumDForIndex(0, R, totalD);
+  layers[0].forEach((p, j) => {
+    dp[0][j] = nodeCost(p, t0);
+    prev[0][j] = -1;
+  });
+
+  // 遷移：第i-1層 → 第i層
+  for (let i=1;i<R;i++){
+    const ti = targetCumDForIndex(i, R, totalD);
+    for (let j=0;j<layers[i].length;j++){
+      let best = { cost: Infinity, k: -1 };
+      const pj = layers[i][j];
+
+      for (let k=0;k<layers[i-1].length;k++){
+        const costPrev = dp[i-1][k];
+        if (!Number.isFinite(costPrev)) continue;
+
+        // エッジコスト（区間の「等間隔ズレ」補正を少し加点：累積距離の前後差が狭すぎ/広すぎを抑制）
+        const pi = layers[i-1][k];
+        const segD = Math.abs((pj?._proj?.cumD||0) - (pi?._proj?.cumD||0)); // m
+        const ideal = totalD / (R + 1); // 理想区間長
+        const intervalPenalty = Math.abs(segD - ideal) / 1000; // km差分
+
+        const edge = intervalPenalty * 0.5; // 調整係数
+        const node = nodeCost(pj, ti);
+
+        const cand = costPrev + edge + node;
+        if (cand < best.cost){ best = { cost: cand, k }; }
+      }
+      dp[i][j] = best.cost;
+      prev[i][j] = best.k;
+    }
+  }
+
+  // 復元（第R-1層の最小コスト終端から辿る）
+  let endJ = -1, bestVal = Infinity;
+  for (let j=0;j<layers[R-1].length;j++){
+    if (dp[R-1][j] < bestVal){ bestVal = dp[R-1][j]; endJ = j; }
+  }
+  if (endJ < 0) {
+    // どの層にも候補が無い場合の保険：空で返す
+    return { picksByTrigger: Array(R).fill(null), stats:{dist:[],time:[],energy:[]}, score: 1e9 };
+  }
+
+  const picks = Array(R).fill(null);
+  let i = R-1, j = endJ;
+  while (i >= 0 && j >= 0){
+    picks[i] = layers[i][j];
+    j = prev[i][j];
+    i--;
+  }
+
+  // 既存の近似評価で統計を作成（可視化のため）
+  const ev = evalByCums(restGroups, picks, cumTotals);
+  return { picksByTrigger: picks, stats: ev.stats, score: ev.score };
+}
+
+
+  
 /* ===== 超シンプル・プロファイラ ===== */
 const PERF = { on:true, rows:[], max:200 };
 function perfNow(){ return (performance?.now?.() ?? Date.now()); }
@@ -1910,8 +2211,6 @@ let SCORE_WEIGHTS = (()=>{
     return { wAlign:1.0, wPerp:1.0, wTrig:0.5 };
   }
 })();
-  /* ===== スコア指標（distance|time|energy） ===== */
-let SCORE_METRIC = (localStorage.getItem('route_score_metric') || 'distance');
 
 function getScoreMetric(){
   const sel = document.getElementById('scoreMetricSelect');
@@ -2166,19 +2465,6 @@ function enumerateCombinations(poiGroups, perGroupLimit = 3, hardCap = 60){
   return combos;
 }
 
-// スコア（小さいほど良い）：距離/時間/エネルギーの標準偏差の合計
-function comboScore(legStats){
-  const sd = (a)=>{ if(!a.length) return 0;
-    const m=a.reduce((x,y)=>x+y,0)/a.length;
-    return Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/a.length);
-  };
-  const metric = getScoreMetric();
-  if (metric === 'time')   return sd(legStats.time);
-  if (metric === 'energy') return sd(legStats.energy);
-  return sd(legStats.dist); // default: distance
-}
-
-
 // 組み合わせルートのレグ統計を取得（ORS呼び出し）
 async function routeLegStatsForWaypoints(wps, profile){
   const body = { coordinates: wps.map(p=>[p.lon,p.lat]), elevation:true, extra_info:['steepness'], preference:'fastest' };
@@ -2229,69 +2515,6 @@ function projectToRoute(lat,lon, coords, cum){
   return { cumD:lerp(cum.D), cumT:lerp(cum.T), cumE:lerp(cum.E), perpM: best.dist };
 }
 
-// picksByTrigger（各トリガーの選択）を累積から評価（ゼロAPI）
-function evalByCums(restGroups, picksByTrigger, cumTotals){
-  const totalD = Number(cumTotals?.D) || 0;   // m
-  const totalT = Number(cumTotals?.T) || 0;   // s
-  const totalE = Number(cumTotals?.E) || 0;   // kJ
-
-  // 休憩分割による「区切り」を累積距離で作る
-  const cuts = [0];
-  (picksByTrigger || []).forEach(p => {
-    const v = Number(p?._proj?.cumD);
-    if (Number.isFinite(v) && v > 0 && v < totalD) cuts.push(v);
-  });
-  if (totalD > 0) cuts.push(totalD);
-
-  // 区間距離（km）
-  const dist = [];
-  if (cuts.length >= 2){
-    cuts.sort((a,b)=>a-b);
-    for (let i=1;i<cuts.length;i++){
-      const d = (Number(cuts[i]) - Number(cuts[i-1])) / 1000; // km
-      if (Number.isFinite(d) && d >= 0) dist.push(d);
-    }
-  }
-
-  // 区間時間/エネルギーは距離比分配（総量が0なら均等割）
-  const time = [], energy = [];
-  if (dist.length){
-    if (totalD > 0 && Number.isFinite(totalD)){
-      for (const d of dist){
-        const ratio = ((d*1000) / totalD); // 0..1
-        time.push((totalT/60) * (Number.isFinite(ratio)? ratio : 0)); // 分
-        energy.push(totalE * (Number.isFinite(ratio)? ratio : 0));    // kJ
-      }
-    } else {
-      const eqT = (totalT/60) / dist.length;
-      const eqE = (totalE) / dist.length;
-      for (let i=0;i<dist.length;i++){ time.push(eqT||0); energy.push(eqE||0); }
-    }
-  }
-
-  // 安全化
-  const finite = a => a.filter(x => Number.isFinite(x));
-  const distF = finite(dist), timeF = finite(time), energyF = finite(energy);
-
-  // 標準偏差
-  const sd = (a) => {
-    if (!a.length) return 0;
-    const m = a.reduce((s,v)=>s+v,0) / a.length;
-    const v = a.reduce((s,v)=>s+(v-m)*(v-m),0) / a.length;
-    return Math.sqrt(v);
-  };
-
-  // ★ 単一指標スコア（UIの選択に従う）
-  const metric = getScoreMetric();
-  const sigmas = { dist: sd(distF), time: sd(timeF), energy: sd(energyF) };
-  const score =
-      metric === 'time'   ? sigmas.time
-    : metric === 'energy' ? sigmas.energy
-    :                       sigmas.dist;   // default: distance
-
-  return { stats: { dist: distF, time: timeF, energy: energyF }, score, sigma: sigmas };
-}
-
 /* ===== 共通ユーティリティ：候補検査＆未採用の強制補修 ===== */
 
 /* ===== 共通ユーティリティ：候補検査＆未採用の強制補修 ===== */
@@ -2327,83 +2550,6 @@ function repairNullPicks(restGroups, cumTotals, picks){
   return out;
 }
 
-
-/* ===== ビームサーチ（ゼロAPI）：候補ありは必採用＋未採用補修 ===== */
-function beamSearch(restGroups, cumTotals, width = 3, minRest = 1, nullPenalty = 1e6, forbidNullWhenCand = true) {
-  // beams 要素: { picks: [...(p or null)], score, pickedCount }
-  let beams = [{ picks: [], score: 0, pickedCount: 0 }];
-
-  for (let i = 0; i < restGroups.length; i++){
-    const g = restGroups[i];
-let pois = (g?.pois || []).slice();
-
-// ▼ _proj が無い/不完全な POI には、休憩トリガーの routeD を使って暫定射影を付与
-if (pois.length && g?.rest && Number.isFinite(g.rest.routeD)) {
-  pois.forEach(p => {
-    if (!p) return;
-    if (!p._proj || !Number.isFinite(p._proj.cumD)) {
-      p._proj = { cumD: Number(g.rest.routeD), cumT: NaN, cumE: NaN };
-    }
-  });
-}
-
-// ここから先は従来と同じロジック
-const valid = pois.filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
-const totalD = Number(cumTotals?.D) || 0;
-const target = targetCumDForIndex(i, restGroups.length, totalD);
-valid.sort((a,b)=> nodeCost(a, target) - nodeCost(b, target));
-
-
-const cand = valid.length
-  ? (forbidNullWhenCand ? valid : [...valid, null])
-  : [null];
-
-
-    const next = [];
-    for (const b of beams){
-      for (const p of cand){
-        const picks = b.picks.concat([p]);
-
-        // ゼロAPI近似評価
-        const ev = evalByCums(restGroups, picks, cumTotals);
-        let s = ev.score;
-
-        // ★ 候補があるのに null を選んだ場合は強ペナルティ
-        if (p === null && valid.length){
-          s += nullPenalty;
-        }
-
-        next.push({
-          picks,
-          score: Number.isFinite(s) ? s : 0,
-          pickedCount: b.pickedCount + (p ? 1 : 0)
-        });
-      }
-    }
-
-    // スコア上位 width 件のみ保持
-    next.sort((a,b)=>a.score - b.score);
-    beams = next.slice(0, width);
-  }
-
-  // ★ 最低採用数の制約（候補があるトリガー分を採用）
-  let final = beams.filter(b => b.pickedCount >= minRest);
-  if (!final.length) final = beams;
-
-  // ★ 未採用(null)の“補修”をかけてから最終スコア再計算
-  final = final.map(b => {
-    const fixedPicks = repairNullPicks(restGroups, cumTotals, b.picks);
-    const ev = evalByCums(restGroups, fixedPicks, cumTotals);
-    return {
-      picksByTrigger: fixedPicks,  // ← 修正後の picks を返す（以後の表示は必ず採用表示になる）
-      score: ev.score,
-      stats: ev.stats
-    };
-  }).sort((a,b)=>a.score - b.score);
-
-  return final.slice(0, 3);
-}
-
 // ビームサーチを1回実行して結果配列を返す（UIにはまだ表示しない）
 function runBeamSearchOnce(restGroups, cumTotals) {
   const triggersWithCand = (restGroups || []).reduce((n, g) => {
@@ -2429,52 +2575,6 @@ function runBeamSearchOnce(restGroups, cumTotals) {
     picksByTrigger: t.picksByTrigger,
     picks: t.picksByTrigger.filter(Boolean)
   }));
-}
-// 総当たりを1回実行して結果配列を返す（UIにはまだ表示しない）
-async function runBruteforceOnce(start, goal, restGroups, profile) {
-  // 各トリガーのPOI配列を取り出す
-  const poiGroups = restGroups.map(g => Array.isArray(g.pois) ? g.pois : []);
-  const perGroupLimit = Math.max(1, Number($('poiLimit').value) || 5);
-
-  // enumerateCombinations はすでに定義済み（上限60）
-  const combos = enumerateCombinations(poiGroups, perGroupLimit, 60);
-  if (!combos.length) return [];
-
-  const results = [];
-  let okCount = 0, failCount = 0;
-
-  for (const cmb of combos) {
-    const picks = cmb.filter(Boolean);
-    const wps = [start, ...picks, goal].map(p => ({
-      lat: p.lat,
-      lon: p.lon,
-      name: p.name || 'POI'
-    }));
-
-    try {
-      const { feature, stats } = await routeLegStatsForWaypoints(wps, profile);
-      const rawScore = comboScore(stats); // σベースのスコア
-      const weights  = picks.map(p => Number(p?._w) || 1);
-      const meanW    = weights.length ? (weights.reduce((a,b)=>a+b,0)/weights.length) : 1;
-      const score    = rawScore / Math.max(0.1, meanW);
-      results.push({
-        score,
-        rawScore,
-        feature,
-        picks,
-        picksByTrigger: cmb,
-        stats
-      });
-      okCount++;
-    } catch (e) {
-      console.warn('combo route fail', e);
-      failCount++;
-    }
-  }
-
-  // スコア昇順
-  results.sort((a,b)=>a.score-b.score);
-  return results;
 }
 
 // アルゴリズム比較デバッグ本体
@@ -2582,61 +2682,6 @@ async function runAlgoCompareDebug(){
     console.error(err);
     panel.textContent += '\n[エラー] ' + (err.message || err);
   }
-}
-
-
-/* ===== 等間隔貪欲法（修正版）: 候補がある場合は必ず採用 ===== */
-function greedyTopKCandidates(restGroups, cumTotals, K = 3) {
-  const R = restGroups.length;
-  const groups = [];
-
-  for (let t = 0; t < R; t++) {
-    const g = restGroups[t];
-    const target = cumTotals.D * (t + 1) / (R + 1); // m（距離基準）
-    let pois = (g && Array.isArray(g.pois)) ? g.pois : [];
-
-    if (!pois.length) {
-      groups.push([null]); // 物理的に候補ゼロ
-      continue;
-    }
-    // ▼ _proj が無い POI には、休憩トリガー距離を暫定で入れて候補落ちを防ぐ
-if (g?.rest && Number.isFinite(g.rest.routeD)) {
-  pois.forEach(p => {
-    if (!p) return;
-    if (!p._proj || !Number.isFinite(p._proj.cumD)) {
-      p._proj = { cumD: Number(g.rest.routeD), cumT: NaN, cumE: NaN };
-    }
-  });
-}
-
-
-    // --- 射影値 _proj が無い場合に補完 ---
-    const needProj = pois.some(p => p && (!p._proj || !Number.isFinite(p._proj.cumD)));
-    if (needProj && window.__routeCums) {
-      const { cum, coords } = window.__routeCums;
-      pois.forEach(p => {
-        if (p && (!p._proj || !Number.isFinite(p._proj.cumD))) {
-          p._proj = projectToRoute(p.lat, p.lon, coords, cum);
-        }
-      });
-    }
-
-    // --- 射影値があるものを優先 ---
-    const withProj = pois.filter(p => p && p._proj && Number.isFinite(p._proj.cumD));
-    let ranked;
-
-    const base = withProj.length ? withProj : pois;
- ranked = base
-   .map(p => ({ p, c: nodeCost(p, target) }))
-   .sort((a, b) => a.c - b.c)
-   .slice(0, K)
-   .map(x => x.p);
-
-    // 候補があれば必ず採用。空なら [null]
-    groups.push(ranked.length ? ranked : [null]);
-  }
-
-  return groups;
 }
 
 function ensureProjections() {
@@ -2771,92 +2816,6 @@ function arterialScore(feature){
 
   const wSpeed = 1.0, wTurns = 0.6;          // 調整OK
   return (wSpeed*meanSpeed) - (wTurns*turnsPerKm);
-}
-
-/* ===== DP（層グラフ最短路） ===== */
-// restGroups: [{rest, pois:[p...]}, ...], cumTotals: {D,T,E}
-function dpSearch(restGroups, cumTotals){
-  const R = restGroups.length;
-  const totalD = Number(cumTotals?.D) || 0;
-
-  // 各層の候補（_proj が無いものは routeD で暫定補完）
-  const layers = restGroups.map((g, i) => {
-    let pois = (g?.pois || []).slice();
-    if (g?.rest && Number.isFinite(g.rest.routeD)) {
-      pois.forEach(p => {
-        if (!p._proj || !Number.isFinite(p._proj.cumD)) {
-          p._proj = { cumD: Number(g.rest.routeD), perpM: Number(p.distFromTriggerM)||0 };
-        }
-      });
-    }
-    // 等間隔ターゲットに対する単点コスト（並べ替えにも使う）
-    const target = targetCumDForIndex(i, R, totalD);
-    pois.sort((a,b)=> nodeCost(a, target) - nodeCost(b, target));
-    return pois;
-  });
-
-  // DPテーブル
-  // dp[i][j] = 第i層で j番目POIを選んだ時の最小コスト
-  // prev[i][j] = 一つ前の層のインデックス
-  const dp = [], prev = [];
-  for (let i=0;i<R;i++) { dp[i] = []; prev[i] = []; }
-
-  // 初期化：スタート→第0層の各POIのコスト（単点コストのみ）
-  const t0 = targetCumDForIndex(0, R, totalD);
-  layers[0].forEach((p, j) => {
-    dp[0][j] = nodeCost(p, t0);
-    prev[0][j] = -1;
-  });
-
-  // 遷移：第i-1層 → 第i層
-  for (let i=1;i<R;i++){
-    const ti = targetCumDForIndex(i, R, totalD);
-    for (let j=0;j<layers[i].length;j++){
-      let best = { cost: Infinity, k: -1 };
-      const pj = layers[i][j];
-
-      for (let k=0;k<layers[i-1].length;k++){
-        const costPrev = dp[i-1][k];
-        if (!Number.isFinite(costPrev)) continue;
-
-        // エッジコスト（区間の「等間隔ズレ」補正を少し加点：累積距離の前後差が狭すぎ/広すぎを抑制）
-        const pi = layers[i-1][k];
-        const segD = Math.abs((pj?._proj?.cumD||0) - (pi?._proj?.cumD||0)); // m
-        const ideal = totalD / (R + 1); // 理想区間長
-        const intervalPenalty = Math.abs(segD - ideal) / 1000; // km差分
-
-        const edge = intervalPenalty * 0.5; // 調整係数
-        const node = nodeCost(pj, ti);
-
-        const cand = costPrev + edge + node;
-        if (cand < best.cost){ best = { cost: cand, k }; }
-      }
-      dp[i][j] = best.cost;
-      prev[i][j] = best.k;
-    }
-  }
-
-  // 復元（第R-1層の最小コスト終端から辿る）
-  let endJ = -1, bestVal = Infinity;
-  for (let j=0;j<layers[R-1].length;j++){
-    if (dp[R-1][j] < bestVal){ bestVal = dp[R-1][j]; endJ = j; }
-  }
-  if (endJ < 0) {
-    // どの層にも候補が無い場合の保険：空で返す
-    return { picksByTrigger: Array(R).fill(null), stats:{dist:[],time:[],energy:[]}, score: 1e9 };
-  }
-
-  const picks = Array(R).fill(null);
-  let i = R-1, j = endJ;
-  while (i >= 0 && j >= 0){
-    picks[i] = layers[i][j];
-    j = prev[i][j];
-    i--;
-  }
-
-  // 既存の近似評価で統計を作成（可視化のため）
-  const ev = evalByCums(restGroups, picks, cumTotals);
-  return { picksByTrigger: picks, stats: ev.stats, score: ev.score };
 }
 
 // 上位3件カードの「この組み合わせでルート表示」から呼ばれる
@@ -3104,3 +3063,4 @@ function downloadBruteforceCsv(){
 </script>
 </body>
 </html>
+
