@@ -195,30 +195,6 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   <small style="color:#666;margin-left:8px">※総当たりはAPI制限に注意</small>
 </div>
 
-<!-- アルゴリズム比較デバッグ -->
-<div class="section">
-  <details open>
-    <summary>アルゴリズム比較デバッグ（総当たり vs ビームサーチ）</summary>
-    <div style="margin:6px 0;">
-      <button id="btnAlgoCompare" type="button">
-        総当たり と ビームサーチ を比較（同じPOIセット）
-      </button>
-      <button id="dbgAlgoCsv" type="button" style="margin-left:8px;">
-        Excel用CSVダウンロード
-      </button>
-      <small style="color:#666;display:block;margin-top:4px">
-        ※先に「休憩場所検索」で 休憩トリガー＋POI を作ってから実行してください。
-      </small>
-    </div>
-    <pre id="algoComparePanel"
-         style="font-family:ui-monospace,monospace;font-size:12px;
-                white-space:pre-wrap;border:1px solid #eee;
-                padding:6px;max-height:260px;overflow:auto;">
-未実行
-    </pre>
-  </details>
-</div>
-
 <!-- 探索アルゴリズムの計算時間・API利用状況 -->
 <!-- アルゴリズム比較デバッグ -->
 <div class="section">
@@ -472,16 +448,6 @@ window.addEventListener('DOMContentLoaded',()=>{
   if (bfCsvBtn) {
     bfCsvBtn.onclick = downloadBruteforceCsv;
   }
-    const btnCmp = $('btnAlgoCompare');
-  if (btnCmp) {
-    btnCmp.onclick = runAlgoCompareDebug;   // ★比較実行ボタン
-  }
-
-  const csvBtn = $('dbgAlgoCsv');
-  if (csvBtn) {
-    csvBtn.onclick = downloadAlgoCompareCsv; // ★CSV出力ボタン
-  }
-
 
   /* ===== 評価ウェイト UI 初期化 ===== */
   function reflectWeightsToInputs(){
@@ -3107,6 +3073,7 @@ function downloadBruteforceCsv(){
 
   rows.forEach((r, idx) => {
     const rank = idx + 1;
+
     const sig = {
       dist: stdDev(r.stats?.dist || []),
       time: stdDev(r.stats?.time || []),
@@ -3122,299 +3089,27 @@ function downloadBruteforceCsv(){
       rank,
       r.score ?? '',
       r.rawScore ?? '',
-      sig.dist ?? '',
-      sig.time ?? '',
-      sig.energy ?? '',
+      sig.dist.toFixed(3),
+      sig.time.toFixed(3),
+      sig.energy.toFixed(3),
       `"${esc(names)}"`
     ].join(','));
   });
 
-  // UTF-8 BOM + CRLF で Excel 向け
-  const bom  = new Uint8Array([0xEF,0xBB,0xBF]);
-  const csv  = lines.join('\r\n');
-  const blob = new Blob([bom, csv], { type:'text/csv;charset=utf-8' });
-
-  const url = URL.createObjectURL(blob);
-  const a   = document.createElement('a');
-  a.href = url;
-  a.download = 'bruteforce_all_results.csv';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 500);
-}
-function stdDev(arr){
-  if (!arr || !arr.length) return 0;
-  const m = arr.reduce((a,b)=>a+b, 0) / arr.length;
-  const v = arr.reduce((s,x)=> s + (x-m)*(x-m), 0) / arr.length;
-  return Math.sqrt(v);
-}
-function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
-  if (!Array.isArray(resultList) || !resultList.length) return;
-  if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
-
-  resultList.forEach((r, idx)=>{
-    const rank = idx + 1;
-
-    const sig = {
-      dist: stdDev(r.stats?.dist || []),
-      time: stdDev(r.stats?.time || []),
-      energy: stdDev(r.stats?.energy || [])
-    };
-
-    const poiNames = (r.picks || r.picksByTrigger || [])
-      .filter(Boolean)
-      .map(p => p.name || 'POI')
-      .join(' -> ');
-
-    window.__algoCompareRows.push({
-      algo: algoCode,               // 'beam3' / 'bruteforce' 等
-      label,                        // 日本語ラベル
-      rank,                         // 1,2,3...
-      score:      r.score ?? null,  // 最終スコア
-      rawScore:   r.rawScore ?? null, // 総当たり用（あれば）
-      sigmaDist:  sig.dist,
-      sigmaTime:  sig.time,
-      sigmaEnergy:sig.energy,
-      timeMs:     elapsedMs ?? null,
-      orsCalls:   orsCalls ?? null,
-      overpassCalls: overpassCalls ?? null,
-      poiNames
-    });
-  });
-}
-function showAlgoListInPanel(panel, list, tag){
-  if (!list || !list.length){
-    panel.textContent += `（${tag}）結果なし\n`;
-    return;
-  }
-
-  list.slice(0,3).forEach((r, idx)=>{
-    const rank = idx + 1;
-    const sig = {
-      dist: stdDev(r.stats.dist),
-      time: stdDev(r.stats.time),
-      energy: stdDev(r.stats.energy)
-    };
-
-    panel.textContent +=
-      `#${rank} score=${r.score.toFixed(4)} `
-      + `距離σ=${sig.dist.toFixed(2)}km `
-      + `時間σ=${sig.time.toFixed(2)}分 `
-      + `エネσ=${sig.energy.toFixed(1)}kJ\n`;
-
-    (r.picksByTrigger || []).forEach((p, i2)=>{
-      if (!p){
-        panel.textContent += `  - T${i2+1}: （未採用）\n`;
-      } else {
-        panel.textContent +=
-          `  - T${i2+1}: ${p.name} (${p.lat.toFixed(5)},${p.lon.toFixed(5)})\n`;
-      }
-    });
-    panel.textContent += '\n';
-  });
-}
-function downloadAlgoCompareCsv(){
-  const rows = window.__algoCompareRows || [];
-  if (!rows.length){
-    alert('先に「アルゴリズム比較デバッグ」を実行してください');
-    return;
-  }
-
-  const esc = s => String(s).replace(/"/g,'""');
-
-  const header = [
-    'algo',
-    'label',
-    'rank',
-    'score',
-    'rawScore',
-    'sigmaDist_km',
-    'sigmaTime_min',
-    'sigmaEnergy_kJ',
-    'time_ms',
-    'ors_calls',
-    'overpass_calls',
-    'poi_names'
-  ];
-
-  const lines = [];
-  lines.push(header.join(','));
-
-  rows.forEach(r=>{
-    lines.push([
-      r.algo ?? '',
-      `"${esc(r.label ?? '')}"`,
-      r.rank ?? '',
-      r.score ?? '',
-      r.rawScore ?? '',
-      r.sigmaDist ?? '',
-      r.sigmaTime ?? '',
-      r.sigmaEnergy ?? '',
-      r.timeMs ?? '',
-      r.orsCalls ?? '',
-      r.overpassCalls ?? '',
-      `"${esc(r.poiNames ?? '')}"`
-    ].join(','));
-  });
-
+  // UTF-8 BOM + CRLF で Excel 対応
   const bom = new Uint8Array([0xEF,0xBB,0xBF]);
   const csv = lines.join('\r\n');
   const blob = new Blob([bom, csv], { type:'text/csv;charset=utf-8' });
 
-  const url = URL.createObjectURL(blob);
+  const url  = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'algo_compare_debug.csv';
+  a.download = 'bruteforce_all_combos.csv';
   a.click();
   setTimeout(()=>URL.revokeObjectURL(url), 500);
 }
-function runBeamSearchOnce(restGroups, cumTotals) {
-  const triggersWithCand = (restGroups || []).reduce((n, g) => {
-    const valid = (g?.pois || []).filter(
-      p => p && p._proj && Number.isFinite(p._proj.cumD)
-    );
-    return n + (valid.length ? 1 : 0);
-  }, 0);
-
-  const top = beamSearch(
-    restGroups,
-    cumTotals,
-    /*width*/ 3,
-    /*minRest*/ triggersWithCand,
-    /*nullPenalty*/ 1e6,
-    /*forbidNullWhenCand*/ true
-  );
-
-  return top.map(t => ({
-    score: t.score,
-    stats: t.stats,
-    picksByTrigger: t.picksByTrigger,
-    picks: t.picksByTrigger.filter(Boolean)
-  }));
-}
-async function runBruteforceOnce(start, goal, restGroups, profile) {
-  const poiGroups = restGroups.map(g => Array.isArray(g.pois) ? g.pois : []);
-  const perGroupLimit = Math.max(1, Number($('poiLimit').value) || 5);
-
-  const combos = enumerateCombinations(poiGroups, perGroupLimit, 60);
-  if (!combos.length) return [];
-
-  const results = [];
-  let okCount = 0, failCount = 0;
-
-  for (const cmb of combos) {
-    const picks = cmb.filter(Boolean);
-    const wps = [start, ...picks, goal].map(p => ({
-      lat: p.lat,
-      lon: p.lon,
-      name: p.name || 'POI'
-    }));
-
-    try {
-      const { feature, stats } = await routeLegStatsForWaypoints(wps, profile);
-      const rawScore = comboScore(stats);
-      const weights  = picks.map(p => Number(p?._w) || 1);
-      const meanW    = weights.length ? (weights.reduce((a,b)=>a+b,0)/weights.length) : 1;
-      const score    = rawScore / Math.max(0.1, meanW);
-      results.push({
-        score,
-        rawScore,
-        feature,
-        picks,
-        picksByTrigger: cmb,
-        stats
-      });
-      okCount++;
-    } catch (e) {
-      console.warn('combo route fail', e);
-      failCount++;
-    }
-  }
-
-  results.sort((a,b)=>a.score-b.score);
-  return results;
-}
-async function runAlgoCompareDebug(){
-  const panel = $('algoComparePanel');
-  panel.textContent = '';
-
-  window.__algoCompareRows = [];
-
-  try {
-    if (!routeData.fastest) {
-      panel.textContent = '先に「休憩場所検索」でルート＋POIを生成してください。';
-      return;
-    }
-    if (!restGroups || !restGroups.length) {
-      panel.textContent = '休憩トリガーがありません。';
-      return;
-    }
-
-    // 累積（距離/時間/エネ）準備
-    ensureProjections();
-    const cumTotals = window.__cumTotals;
-
-    const start = pts.find(p=>p.type==='start') || pts[0];
-    const goal  = pts.find(p=>p.type==='goal')  || pts[pts.length-1];
-    const profile = $('profileSelect').value;
-
-    panel.textContent += '====== アルゴリズム比較デバッグ ======\n\n';
-
-    // --- 1) ビームサーチ ---
-    panel.textContent += '--- ビームサーチ（幅3・ゼロAPI） ---\n';
-
-    const orsBeforeBeam = API_USED.orsTotal;
-    const ovpBeforeBeam = API_USED.overpassTotal;
-
-    const tkBeam = tStart('beamSearch-debug');
-    const beamList = runBeamSearchOnce(restGroups, cumTotals);
-    tEnd(tkBeam);
-
-    const beamPerf = PERF.rows.at(-1);
-    const beamMs   = beamPerf?.ms ?? 0;
-    const beamOrs  = API_USED.orsTotal      - orsBeforeBeam;
-    const beamOv   = API_USED.overpassTotal - ovpBeforeBeam;
-
-    panel.textContent += `処理時間: ${beamMs.toFixed(1)} ms\n`;
-    panel.textContent += `ORS呼び出し: ${beamOrs} 回\n`;
-    panel.textContent += `Overpass呼び出し: ${beamOv} 回\n\n`;
-
-    showAlgoListInPanel(panel, beamList, 'beam3');
-    pushAlgoResultsForCsv('beam3','ビームサーチ（幅3）', beamList.slice(0,3), beamMs, beamOrs, beamOv);
-
-    // --- 2) 総当たり ---
-    panel.textContent += '\n--- 総当たり（API多め・高精度） ---\n';
-
-    const orsBeforeBF = API_USED.orsTotal;
-    const ovpBeforeBF = API_USED.overpassTotal;
-
-    const tkBF = tStart('bruteforce-debug');
-    const bfList = await runBruteforceOnce(start, goal, restGroups, profile);
-    tEnd(tkBF);
-
-    const bfPerf = PERF.rows.at(-1);
-    const bfMs   = bfPerf?.ms ?? 0;
-    const bfOrs  = API_USED.orsTotal      - orsBeforeBF;
-    const bfOv   = API_USED.overpassTotal - ovpBeforeBF;
-
-    panel.textContent += `処理時間: ${bfMs.toFixed(1)} ms\n`;
-    panel.textContent += `ORS呼び出し: ${bfOrs} 回\n`;
-    panel.textContent += `Overpass呼び出し: ${bfOv} 回\n`;
-    panel.textContent += `組合せ数: ${bfList.length} 件\n\n`;
-
-    showAlgoListInPanel(panel, bfList, 'bruteforce');
-    pushAlgoResultsForCsv('bruteforce','総当たり', bfList.slice(0,3), bfMs, bfOrs, bfOv);
-
-    panel.textContent += '\n====== 比較完了 ======\n';
-
-  } catch (err){
-    console.error(err);
-    panel.textContent += '\n[エラー] ' + (err.message || err);
-  }
-}
-
 
 </script>
 </body>
 </html>
-
 
