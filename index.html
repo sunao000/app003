@@ -88,12 +88,12 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
       平均 <input id="statMean" type="number" value="20" step="1">km
       分散 <input id="statVar" type="number" value="9" step="0.5">km²<br>
       <label><input type="checkbox" id="optPercentTrigger" checked> 割合トリガ</label>
-      %ごと <input id="percentStep" type="number" value="25" step="1"> %
-      <select id="percentMetric">
-        <option value="distance">距離</option>
-        <option value="energy">エネルギー</option>
-        <option value="time">時間</option>
-      </select>
+%ごと <input id="percentStep" type="number" value="33" step="1"> %
+<select id="percentMetric">
+  <option value="distance">距離</option>
+  <option value="energy" selected>エネルギー</option>
+  <option value="time">時間</option>
+</select>
     </div>
     
     <!-- ゴール／既存地点 近接スキップ設定 -->
@@ -3130,6 +3130,7 @@ function downloadBruteforceCsv(){
 </script>
 </body>
 </html>
+
 
 
 
