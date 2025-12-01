@@ -332,6 +332,48 @@ let OVERPASS_CALL_TOTAL = 0;  // Overpass API の累計呼び出し回数
   window.__algoCompareRows = [];
   window.__bruteforceAllResults = [];   // ★ 総当たりの全結果を保存する配列
 
+/* ===== 共通ユーティリティ ===== */
+
+// HTML要素取得
+function $(id){ return document.getElementById(id); }
+
+// CSV用エスケープ
+function csvEscape(s){
+  return String(s).replace(/"/g, '""');
+}
+
+// CSV文字列を作って Blob を返す（UTF-8 BOM & CRLF）
+function buildCsvBlob(header, rows){
+  const lines = [];
+  if (header && header.length) lines.push(header.join(','));
+  if (rows && rows.length){
+    for (const cols of rows){
+      lines.push(cols.join(','));
+    }
+  }
+  const bom = new Uint8Array([0xEF,0xBB,0xBF]);
+  const csv = lines.join('\r\n');
+  return new Blob([bom, csv], { type: 'text/csv;charset=utf-8' });
+}
+
+// Blob をファイルとしてダウンロード
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 500);
+}
+
+// 配列の標準偏差
+function stdDev(arr){
+  if (!arr || !arr.length) return 0;
+  const m = arr.reduce((a,b)=>a+b, 0) / arr.length;
+  const v = arr.reduce((s,x)=> s + (x-m)*(x-m), 0) / arr.length;
+  return Math.sqrt(v);
+}
+
 /* ===== 超シンプル・プロファイラ ===== */
 const PERF = { on:true, rows:[], max:200 };
 function perfNow(){ return (performance?.now?.() ?? Date.now()); }
@@ -2042,36 +2084,23 @@ function renderLinearResults(rows){
 
 function downloadLinearCsv(){
   const rows = window.__linear_rows_for_csv || [];
-  if(!rows.length) return;
+  if (!rows.length) return;
 
-  // CSV行を作る（ダブルクォートでエスケープ）
-  const esc = s => String(s).replace(/"/g,'""');
   const header = ['rank','total_km','indices_per_trigger','poi_names'];
-  const lines = [header.join(',')];
 
-  rows.forEach((r,i)=>{
+  const bodyRows = rows.map((r, i)=>{
     const names = r.picks.map(p=> (p?.name ?? 'POI')).join(' -> ');
-    lines.push([
-      i+1,
+    return [
+      String(i+1),
       r.km.toFixed(3),
-      `"${esc(JSON.stringify(r.idxes))}"`,
-      `"${esc(names)}"`
-    ].join(','));
+      `"${csvEscape(JSON.stringify(r.idxes))}"`,
+      `"${csvEscape(names)}"`
+    ];
   });
 
-  // 重要：UTF-8 BOM を先頭に付ける + CRLF 改行（Excel対策）
-  const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-  const csv = lines.join('\r\n');
-  const blob = new Blob([bom, csv], { type: 'text/csv;charset=utf-8' });
-
-  const url  = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'linear_combinations.csv';
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(url), 500);
+  const blob = buildCsvBlob(header, bodyRows);
+  downloadBlob(blob, 'linear_combinations.csv');
 }
-
 
 // ボタン動作：計算 → 並べ替え → 表示
 function bindLinearButtonsOnce(){
@@ -2878,14 +2907,6 @@ async function showLinearComboRoute(row){
   setActiveButton(null);
 }
 
-
-function stdDev(arr){
-  if (!arr || !arr.length) return 0;
-  const m = arr.reduce((a,b)=>a+b, 0) / arr.length;
-  const v = arr.reduce((s,x)=> s + (x-m)*(x-m), 0) / arr.length;
-  return Math.sqrt(v);
-}
-
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
@@ -2960,8 +2981,6 @@ function downloadAlgoCompareCsv(){
     return;
   }
 
-  const esc = s => String(s).replace(/"/g,'""');
-
   const header = [
     'algo',
     'label',
@@ -2977,37 +2996,23 @@ function downloadAlgoCompareCsv(){
     'poi_names'
   ];
 
-  const lines = [];
-  lines.push(header.join(','));
+  const bodyRows = rows.map(r => [
+    r.algo ?? '',
+    `"${csvEscape(r.label ?? '')}"`,
+    r.rank ?? '',
+    r.score ?? '',
+    r.rawScore ?? '',
+    r.sigmaDist ?? '',
+    r.sigmaTime ?? '',
+    r.sigmaEnergy ?? '',
+    r.timeMs ?? '',
+    r.orsCalls ?? '',
+    r.overpassCalls ?? '',
+    `"${csvEscape(r.poiNames ?? '')}"`
+  ]);
 
-  rows.forEach(r=>{
-    lines.push([
-      r.algo ?? '',
-      `"${esc(r.label ?? '')}"`,
-      r.rank ?? '',
-      r.score ?? '',
-      r.rawScore ?? '',
-      r.sigmaDist ?? '',
-      r.sigmaTime ?? '',
-      r.sigmaEnergy ?? '',
-      r.timeMs ?? '',
-      r.orsCalls ?? '',
-      r.overpassCalls ?? '',
-      `"${esc(r.poiNames ?? '')}"`
-    ].join(','));
-  });
-
-  // UTF-8 BOM + CRLF で Excel 対応
-  const bom = new Uint8Array([0xEF,0xBB,0xBF]);
-  const csv = lines.join('\r\n');
-  const blob = new Blob([bom, csv], { type:'text/csv;charset=utf-8' });
-
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'algo_compare_debug.csv';
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(url), 500);
+  const blob = buildCsvBlob(header, bodyRows);
+  downloadBlob(blob, 'algo_compare_debug.csv');
 }
 
 function renderBruteforceAllResults(results){
@@ -3049,14 +3054,13 @@ function renderBruteforceAllResults(results){
 
   box.textContent = lines.join('\n');
 }
+
 function downloadBruteforceCsv(){
   const rows = window.__bruteforceAllResults || [];
   if (!rows.length){
     alert('総当たりがまだ実行されていません');
     return;
   }
-
-  const esc = s => String(s).replace(/"/g,'""');
 
   const header = [
     'rank',
@@ -3068,10 +3072,7 @@ function downloadBruteforceCsv(){
     'poi_names'
   ];
 
-  const lines = [];
-  lines.push(header.join(','));
-
-  rows.forEach((r, idx) => {
+  const bodyRows = rows.map((r, idx) => {
     const rank = idx + 1;
 
     const sig = {
@@ -3085,31 +3086,21 @@ function downloadBruteforceCsv(){
       .map(p => p.name || 'POI')
       .join(' -> ');
 
-    lines.push([
+    return [
       rank,
       r.score ?? '',
       r.rawScore ?? '',
       sig.dist.toFixed(3),
       sig.time.toFixed(3),
       sig.energy.toFixed(3),
-      `"${esc(names)}"`
-    ].join(','));
+      `"${csvEscape(names)}"`
+    ];
   });
 
-  // UTF-8 BOM + CRLF で Excel 対応
-  const bom = new Uint8Array([0xEF,0xBB,0xBF]);
-  const csv = lines.join('\r\n');
-  const blob = new Blob([bom, csv], { type:'text/csv;charset=utf-8' });
-
-  const url  = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'bruteforce_all_combos.csv';
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(url), 500);
+  const blob = buildCsvBlob(header, bodyRows);
+  downloadBlob(blob, 'bruteforce_all_combos.csv');
 }
 
 </script>
 </body>
 </html>
-
