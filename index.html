@@ -332,6 +332,9 @@ let OVERPASS_CALL_TOTAL = 0;  // Overpass API の累計呼び出し回数
   window.__algoCompareRows = [];
   window.__bruteforceAllResults = [];   // ★ 総当たりの全結果を保存する配列
 
+// 既存のグローバル変数の近くに追加
+let restBeamLayer;   // トリガー ↔ POI の道のりビーム用レイヤー
+
 /* ===== 共通ユーティリティ ===== */
 
 // HTML要素取得
@@ -862,6 +865,7 @@ if (sm) {
   map=L.map('map').setView([34.07,134.55],11);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
               {attribution:'©OpenStreetMap'}).addTo(map);
+  restBeamLayer = L.layerGroup().addTo(map);
 
   // 検索ボタン：検索後に入力欄クリア
   $('searchBtn').onclick = () => {
@@ -1979,6 +1983,7 @@ function updateRestPoiPanel(){
     li.appendChild(ul);
     ol.appendChild(li);
   });
+  drawRestBeams();
 }
 
 // 組み合わせ表示専用：使用地点だけピンを出す
@@ -3127,10 +3132,56 @@ function downloadBruteforceCsv(){
   downloadBlob(blob, 'bruteforce_all_combos.csv');
 }
 
+// トリガー ↔ POI のビームを全部消す
+function clearRestBeams() {
+  if (restBeamLayer) {
+    restBeamLayer.clearLayers();
+  }
+}
+
+// restGroups をもとにトリガー ↔ POI のビームを引く
+function drawRestBeams() {
+  if (!restBeamLayer) return;
+  if (!window.restGroups || !Array.isArray(window.restGroups)) return;
+
+  // いったん全部消す
+  clearRestBeams();
+
+  window.restGroups.forEach(group => {
+    if (!group) return;
+
+    // group.rest に「休憩トリガーの地点」が入っている想定
+    const r = group.rest;
+    const pois = group.pois || [];
+    if (!r || !Array.isArray(pois) || !pois.length) return;
+
+    const baseLat = Number(r.lat);
+    const baseLon = Number(r.lon);
+    if (!Number.isFinite(baseLat) || !Number.isFinite(baseLon)) return;
+
+    const baseLL = L.latLng(baseLat, baseLon);
+
+    pois.forEach(p => {
+      if (!p) return;
+      const lat = Number(p.lat);
+      const lon = Number(p.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+      const poiLL = L.latLng(lat, lon);
+
+      // トリガー ↔ POI の直線（道のりビーム）
+      const line = L.polyline([baseLL, poiLL], {
+        color: 'orange',     // お好みで
+        weight: 2,
+        opacity: 0.7,
+        dashArray: '4,4'     // 点線っぽく
+      });
+
+      line.addTo(restBeamLayer);
+    });
+  });
+}
+
 </script>
 </body>
 </html>
-
-
-
-
