@@ -2577,6 +2577,73 @@ function runBeamSearchOnce(restGroups, cumTotals) {
   }));
 }
 
+// ▼▼ 追加：総当たりを1回分だけ実行して全結果を返す関数 ▼▼
+async function runBruteforceOnce(start, goal, restGroups, profile){
+  // 休憩トリガーごとの POI を取得（poiLimit まで）
+  const perGroupLimit = Math.max(1, Number($('poiLimit').value) || 5);
+  const poiGroups = restGroups.map(g => Array.isArray(g.pois) ? g.pois : []);
+
+  // POI を perGroupLimit で頭から切り出して、総当たり用のグループに変換
+  const combos = enumerateCombinations(poiGroups, perGroupLimit, 60); // 上限 60 通り
+  if (!combos.length){
+    throw new Error('組み合わせ候補が作れませんでした。');
+  }
+
+  const results = [];
+  let okCount = 0;
+  let failCount = 0;
+
+  for (const cmb of combos){
+    // cmb は 「トリガーごとの選択（null 含む）」配列
+    const picks = cmb.filter(Boolean); // null は除外して実際の経由地だけにする
+
+    // ORS に渡すウェイポイント列（start → picks... → goal）
+    const wps = [start, ...picks, goal].map(p => ({
+      lat: p.lat,
+      lon: p.lon,
+      name: p.name || 'POI'
+    }));
+
+    try {
+      const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
+
+      // 距離/時間/エネルギーの σ からスコアを作る
+      const rawScore = comboScore(stats);
+
+      // （あれば）POI の重み _w を使って補正
+      const weights  = picks.map(p => Number(p?._w) || 1);
+      const meanW    = weights.length
+        ? (weights.reduce((a,b)=>a+b,0) / weights.length)
+        : 1;
+      const score    = rawScore / Math.max(0.1, meanW);
+
+      results.push({
+        score,           // 補正後スコア（小さいほど良い）
+        rawScore,        // 補正前スコア
+        feature,         // ORS の GeoJSON Feature
+        picks,           // 実際に経由した POI の配列
+        picksByTrigger: cmb, // トリガーごとの採用状況（null を含み得る）
+        stats            // {dist:[], time:[], energy:[]} 区間ごとの値
+      });
+      okCount++;
+    } catch (e){
+      console.warn('runBruteforceOnce: combo route fail', e);
+      failCount++;
+    }
+  }
+
+  // スコア昇順に並べ替え
+  results.sort((a,b)=>a.score - b.score);
+
+  console.log(
+    '[runBruteforceOnce] ok=', okCount,
+    ' fail=', failCount,
+    ' results=', results.length
+  );
+
+  return results;
+}
+
 // アルゴリズム比較デバッグ本体
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
@@ -3063,4 +3130,5 @@ function downloadBruteforceCsv(){
 </script>
 </body>
 </html>
+
 
