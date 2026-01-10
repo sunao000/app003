@@ -207,27 +207,26 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
   </details>
 </div>
 
-<div id="viterbiEdgeTools" style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;">
-  <button id="btnShowViterbiEdges">Viterbiエッジ表示</button>
-  <button id="btnHideViterbiEdges">Viterbiエッジ非表示</button>
-  <button id="btnDlViterbiEdgesCsv">ViterbiエッジCSV(Excel)DL</button>
-  <span id="viterbiEdgeStat" style="opacity:.8;"></span>
+<div id="viterbiEdgeTools" style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0; align-items:center;">
+  <button id="btnShowViterbiEdges" type="button">Viterbiエッジ表示</button>
+  <button id="btnHideViterbiEdges" type="button">非表示</button>
+  <button id="btnDlViterbiEdgesCsv" type="button">CSVダウンロード</button>
+  <span id="viterbiEdgeStat" style="font-size:12px; color:#666; margin-left:4px;"></span>
 </div>
 
-<div id="viterbiEdgesPanel" style="display:none; padding:8px; background:#fff; border:1px solid #ccc; margin:8px 0; max-height:220px; overflow:auto; white-space:pre;"></div>
+<pre id="viterbiEdgePanel" 
+     style="display:none; max-height:260px; overflow:auto; border:1px solid #ccc; padding:6px; background:#fafafa; font-size:11px; font-family:monospace;">
+</pre>
 
-
-<pre id="viterbiEdgePanel" style="display:none;max-height:260px;overflow:auto;border:1px solid #ddd;padding:8px;background:#fafafa;"></pre>
-
+<div style="display:flex; flex-direction:column; gap:4px; margin:8px 0; padding:8px; background:#f9f9f9; border:1px solid #ddd; border-radius:4px;">
 <div style="display:flex; flex-direction:column; gap:4px; margin:8px 0; padding:8px; background:#f9f9f9; border:1px solid #ddd; border-radius:4px;">
   <div style="font-weight:bold; margin-bottom:4px; color:#555;">比較するアルゴリズム</div>
   <label><input type="checkbox" id="dbg_bf" checked> 1. 総当たり (Ground Truth)</label>
-  <label><input type="checkbox" id="dbg_vit_pure" checked> 2. 純粋Viterbi (Goal無視)</label>
+  <label><input type="checkbox" id="dbg_vit_pure" checked> 2. 純粋Viterbi (標準)</label>
   <label><input type="checkbox" id="dbg_linear" checked> 3. 直線比較 (Zero API)</label>
   <label><input type="checkbox" id="dbg_beam" checked> 4. 純粋ビームサーチ (Width=5)</label>
   <label><input type="checkbox" id="dbg_vit_sg_excl" checked> 5. SG排除・純粋Viterbi</label>
-  <label><input type="checkbox" id="dbg_vit_rerank" checked> 6. 純粋Viterbi + 再ランク</label>
-  <label><input type="checkbox" id="dbg_vit_sg_excl_rerank" checked> 7. SG排除・純粋Viterbi + 再ランク</label>
+  <label><input type="checkbox" id="dbg_vit_sg_excl_rerank" checked> 6. SG排除・純粋Viterbi + 再ランク</label>
 </div>
 
 <!-- サマリー -->
@@ -2960,27 +2959,6 @@ async function viterbiRouteCost(p1, p2, profile){
   return { dist, time, energy };
 }
 
-/* ==========================================================
-   【重要】区間データ(Segments)から正しくMSEスコアを計算する関数
-   stats(細かいステップ)を使うと値が狂うため、必ずこれを使う
-   ========================================================== */
-function calcDistMseFromFeature(feature, idealDistPerLeg) {
-  const segments = feature?.properties?.segments || [];
-  
-  if (!segments || segments.length === 0) {
-    return Infinity; // データがない場合は最悪値
-  }
-
-  let sumSq = 0;
-  segments.forEach(seg => {
-    // APIの単位はmなのでkmに変換
-    const dKm = (Number(seg.distance) || 0) / 1000;
-    const diff = dKm - idealDistPerLeg;
-    sumSq += diff * diff;
-  });
-
-  return sumSq / segments.length;
-}
 /* ===== 【修正版】総当たり (区間単位で正しく評価する版) ===== */
 async function runBruteforceOnce(start, goal, restGroups, profile){
   // 休憩トリガーごとの POI を取得
@@ -3012,29 +2990,9 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
       const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
 
       let distScore = 0;
-      
-      // ▼▼▼▼▼ ここが修正の核心 ▼▼▼▼▼
-      // stats(細かいステップ)ではなく、feature.properties.segments(区間)を使う
-      const segments = feature?.properties?.segments || [];
-      
-      if (segments.length > 0) {
-        let sumSq = 0;
-        segments.forEach(seg => {
-          // APIの単位はメートルなので km に直す
-          const dKm = (Number(seg.distance) || 0) / 1000;
-          
-          // (区間距離 - 理想距離) の二乗
-          const diff = dKm - idealDistPerLeg;
-          sumSq += diff * diff;
-        });
-        // 平均二乗誤差 (MSE)
-        distScore = sumSq / segments.length;
 
-      } else {
-        // 万が一 segments がない場合（基本ありえないが念のため）
-        distScore = Infinity;
-      }
-      // ▲▲▲▲▲ 修正ここまで ▲▲▲▲▲
+      // 共通関数を呼ぶだけでOKになります
+const distScore = calcDistMseFromFeature(feature, idealDistPerLeg);
 
       const score = distScore;
       const rawScore = distScore;
@@ -3970,63 +3928,6 @@ function formatNum(x, digits=3){
   return n.toFixed(digits);
 }
 
-function renderViterbiEdgePanel(limit=400){
-  const pre  = document.getElementById('viterbiEdgePanel');
-  const stat = document.getElementById('viterbiEdgeStat');
-
-  // ▼▼ 追加: 表示時も最新データ（理想値入り）を再生成して反映させる ▼▼
-  if (window.__viterbiEdgeAgg) {
-    window.__viterbiAllEdgeRows = Array.from(window.__viterbiEdgeAgg.values()).map(x => {
-      const n = Math.max(1, x.count);
-      return {
-        fromIdx: x.fromIdx, toIdx: x.toIdx,
-        fromName: x.fromName, toName: x.toName,
-        fromLat: x.fromLat, fromLon: x.fromLon,
-        toLat: x.toLat, toLon: x.toLon,
-        count: x.count,
-        energyKj: x.sumEnergyKj / n,
-        distKm: x.sumDistKm / n,
-        timeMin: x.sumTimeMin / n,
-        cost: x.sumCost / n,
-        idealEnergyKj: x.idealEnergyKj // 理想値を取り込む
-      };
-    });
-  }
-
-  const rows = window.__viterbiAllEdgeRows || [];
-
-  if (stat) stat.textContent = `件数: ${rows.length}`;
-  if (!pre) return;
-
-  if (!rows.length){
-    pre.textContent = '(エッジログなし：Viterbi実行後に表示してください)';
-    return;
-  }
-
-  const slice = rows.slice(0, limit);
-
-  const lines = [];
-  // ★ ヘッダーに ideal_kJ を追加
-  lines.push('from\tto\tcount\tdist_km\ttime_min\tenergy_kJ\tideal_kJ\tcost');
-
-  for (const r of slice){
-    lines.push([
-      r.fromName ?? '',
-      r.toName ?? '',
-      r.count ?? 1,
-      formatNum(r.distKm, 3),
-      formatNum(r.timeMin, 2),
-      formatNum(r.energyKj, 2),
-      formatNum(r.idealEnergyKj, 2), // ★ここに値を追加
-      formatNum(r.cost, 3)
-    ].join('\t'));
-  }
-
-  if (rows.length > limit) lines.push(`... (表示は先頭${limit}件まで。全件はCSVで確認)`);
-
-  pre.textContent = lines.join('\n');
-}
-
 function downloadViterbiEdgesCsv(){
   // ▼▼ 追加: Mapがあるなら、そこから最新のリスト(理想値付き)を再生成する ▼▼
   if (window.__viterbiEdgeAgg) {
@@ -4164,40 +4065,115 @@ function bindViterbiEdgeButtons(){
 // DOMができてから確実にbind
 document.addEventListener('DOMContentLoaded', bindViterbiEdgeButtons);
 
+/* =====================================================================
+   【修正・統合版】Viterbiエッジログ機能
+   ※これを元の bindViterbiEdgeButtons や renderViterbi... の代わりに使ってください
+   ===================================================================== */
 
-function renderViterbiEdgesPanel(show){
-  const el = document.getElementById('viterbiEdgesPanel');
-  if (!el) return;
+// 1. ボタンのイベント登録（読み込み時に実行）
+window.addEventListener('DOMContentLoaded', () => {
+  const btnShow = document.getElementById('btnShowViterbiEdges');
+  const btnHide = document.getElementById('btnHideViterbiEdges');
+  const btnDl   = document.getElementById('btnDlViterbiEdgesCsv');
 
-  if (!show){
-    el.style.display = 'none';
-    return;
+  // データ収集用フラグをONに（必須）
+  window.__collectViterbiEdges = true;
+
+  if (btnShow) {
+    btnShow.onclick = () => {
+      const panel = document.getElementById('viterbiEdgePanel');
+      if(panel) {
+        panel.style.display = 'block';
+        renderViterbiLog();
+      }
+    };
   }
+  
+  if (btnHide) {
+    btnHide.onclick = () => {
+      const panel = document.getElementById('viterbiEdgePanel');
+      if(panel) panel.style.display = 'none';
+    };
+  }
+  
+  if (btnDl) {
+    btnDl.onclick = () => {
+      downloadViterbiLogCsv();
+    };
+  }
+});
 
-  el.style.display = 'block';
+// 2. ログ描画関数
+function renderViterbiLog() {
+  const panel = document.getElementById('viterbiEdgePanel');
+  const stat  = document.getElementById('viterbiEdgeStat');
+  if (!panel) return;
 
+  // データ取得
   const rows = window.__viterbiAllEdgeRows || [];
-  if (!rows.length){
-    el.textContent = '（まだViterbiエッジが収集されていません。Viterbiを実行してください）';
+  
+  if (stat) stat.textContent = `記録件数: ${rows.length}件`;
+
+  if (!rows.length) {
+    panel.textContent = '(ログデータがありません。アルゴリズムを実行してください)';
     return;
   }
 
-  // 見やすいように上位だけ表示（全部表示したいなら slice を外す）
-  const head = rows.slice(0, 200);
+  // 最新500件を表示
+  const slice = rows.slice(-500); 
+  
+  const header = 'From -> To\tDist(km)\tTime(min)\tEnergy(kJ)\tCost\tStatus';
+  const lines = slice.map(r => {
+    const status = r.ok ? 'OK' : 'ERR';
+    const d = (r.distKm ?? 0).toFixed(2);
+    const t = (r.timeMin ?? 0).toFixed(1);
+    const e = (r.energyKj ?? 0).toFixed(0);
+    const c = (r.cost ?? 0).toFixed(1); 
+    
+    return `${r.fromName} -> ${r.toName}\t${d}\t${t}\t${e}\t${c}\t${status}`;
+  });
 
-  const lines = [];
-  lines.push(`Viterbi edges: ${rows.length}件（先頭200件表示）`);
-  lines.push('from -> to | dist_km | time_min | energy_kj');
-  lines.push('------------------------------------------------');
+  panel.textContent = [header, ...lines].join('\n');
+}
 
-  for (const r of head){
-    lines.push(
-      `${r.fromName ?? 'from'} -> ${r.toName ?? 'to'} | ` +
-      `${(r.distKm ?? '').toString()} | ${(r.timeMin ?? '').toString()} | ${(r.energyKj ?? '').toString()}`
-    );
+// 3. CSVダウンロード関数
+function downloadViterbiLogCsv() {
+  const rows = window.__viterbiAllEdgeRows || [];
+  if (!rows.length) {
+    alert('ダウンロードするデータがありません。');
+    return;
   }
 
-  el.textContent = lines.join('\n');
+  // BOM付きCSVを作成
+  const header = ['From_Name', 'To_Name', 'Dist_km', 'Time_min', 'Energy_kJ', 'Cost', 'Exec_ms', 'Status', 'Error_Msg'];
+  const csvLines = [header.join(',')];
+
+  rows.forEach(r => {
+    const esc = (s) => `"${String(s || '').replace(/"/g, '""')}"`;
+    const line = [
+      esc(r.fromName),
+      esc(r.toName),
+      r.distKm ?? '',
+      r.timeMin ?? '',
+      r.energyKj ?? '',
+      r.cost ?? '',
+      r.ms ?? '',
+      r.ok ? 'OK' : 'Error',
+      esc(r.errMsg)
+    ];
+    csvLines.push(line.join(','));
+  });
+
+  const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+  const blob = new Blob([bom, csvLines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `viterbi_edges_${new Date().toISOString().slice(0,19).replace(/[-:T]/g,'')}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 /* ==============================================
@@ -4738,6 +4714,9 @@ async function solveBeamSearch(start, goal, groups, profile, options = {}) {
  * * @param options.includeGoalScore trueなら「全区間(Start～Goal)」のMSEを再計算して順位にする
  * @param options.useAccumulatedCost trueなら「探索中の累積コスト」をそのまま順位に使う
  */
+/* ==========================================================
+   【修正版】finalizeAndRank (区間MSEで正しく評価)
+   ========================================================== */
 async function finalizeAndRank(start, goal, candidates, idealDist, profile, options = {}) {
   const includeGoalScore = options.includeGoalScore !== false;
   const useAccumulatedCost = options.useAccumulatedCost === true;
@@ -4749,32 +4728,39 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
     const waypoints = [start, ...candidate.picks, goal];
 
     try {
-      await new Promise(r => setTimeout(r, 100));
-      // 全区間（Start -> POIs -> Goal）の統計を取得
+      await new Promise(r => setTimeout(r, 100)); // API負荷軽減
+      
+      // 全区間のルートを取得
       const out = await routeLegStatsForWaypoints(waypoints, profile);
-      // 全区間のMSEを計算（Start区間、Goal区間も含まれる）
-      const totalMse = routeDistMseFromStats(out.stats, idealDist);
-
-      // 順位決定用のスコア
+      
+      // ★修正ポイント：細かいstatsではなく、区間(segments)から正しいMSEを計算する
+      // （runBruteforceOnce と同じロジックに統一）
       let rankingScore;
+      
+      // 計算用のMSE（Start～Goal全区間）
+      const totalMse = calcDistMseFromFeature(out.feature, idealDist);
+
       if (useAccumulatedCost) {
-        // 「Goal無視」の場合：探索時の値をそのまま使う
+        // 「Goal無視」などの場合：探索時の累積コスト(SSE)をそのまま使う
+        // ※厳密には MSE(平均) と SSE(総和) で単位が異なりますが、
+        //   Goal無視の文脈では「探索で見つけた値」を尊重します。
         rankingScore = candidate.currentCost;
       } else {
-        // 「再ランク」の場合：全区間のMSEを使う（StartもGoalも入る）
+        // 「再ランク」の場合：正しく計算した全区間MSEを使う
         rankingScore = totalMse;
       }
 
       finalResults.push({
         rank: 0,
         score: rankingScore, 
-        displayScore: totalMse, // 画面表示用には常に「真の全区間MSE」を出す
+        displayScore: totalMse, // 表示用は常に「真の全区間MSE」
         poi_names: candidate.picks.map(p => p.name).join(' -> '),
         poi_latlngs: candidate.picks.map(p => `${p.lat},${p.lon}`).join(' | '),
         sigmaEnergy: stdDev(out.stats.energy),
         dist: out.stats.dist,
         picks: candidate.picks,
-        stats: out.stats
+        stats: out.stats,
+        feature: out.feature // 地図表示用
       });
     } catch (e) {
       console.warn("Ranking failed", e);
@@ -4782,213 +4768,128 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
   }
 
   // スコアが小さい順にソート
-  finalResults.sort((a, b) => a.score - b.score);
+  finalResults.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
   finalResults.forEach((r, idx) => r.rank = idx + 1);
+  
   return finalResults;
 }
 
 
+/* =====================================================================
+   【整理版】アルゴリズム比較・統合ロジック
+   UI/機能はそのままに、共通処理をまとめて記述量を削減
+   ===================================================================== */
+
+// ▼▼ 比較するアルゴリズムの定義リスト（6種・繰り上げ版） ▼▼
+const ALGO_CONFIG = [
+  { id: 'dbg_bf', label: '1. 総当たり', func: runBruteforceOnce },
+  { id: 'dbg_vit_pure', label: '2. 純粋Viterbi (標準)', func: (s,g,gr,p) => solveViterbiGeneric(s,g,gr,p, {}) },
+  { id: 'dbg_linear', label: '3. 直線比較', type: 'linear' }, 
+  { id: 'dbg_beam', label: '4. 純粋ビーム', func: (s,g,gr,p) => solveBeamSearch(s,g,gr,p, {beamWidth:5}) },
+  { id: 'dbg_vit_sg_excl', label: '5. SG排除Vit', func: (s,g,gr,p) => solveViterbiGeneric(s,g,gr,p, {ignoreStart:true, ignoreGoalInRank:true}) },
+  { id: 'dbg_vit_sg_excl_rerank', label: '6. SG排除+再ランク', func: (s,g,gr,p) => solveViterbiGeneric(s,g,gr,p, {ignoreStart:true}) },
+];
+
 /* ======================================================
-   【メイン実行関数： runAlgoCompareDebug】
+   メイン実行関数： runAlgoCompareDebug (超短縮版)
    ====================================================== */
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
   panel.textContent = '';
-  const tAll0 = performance.now();
   window.__algoCompareRows = [];
+  const tTotal = performance.now();
 
-  // API負荷軽減用ヘルパー
-  const waitApi = async (ms) => {
-    panel.textContent += `(休憩... ${ms/1000}s)\n`;
-    await new Promise(r => setTimeout(r, ms));
-  };
+  // 共通チェック
+  if (!routeData?.fastest) return panel.textContent = 'ルート・POIを先に検索してください。';
+  if (!restGroups?.length) return panel.textContent = '休憩トリガーがありません。';
 
-  try {
-    if (!routeData || !routeData.fastest) {
-      panel.textContent = 'ルート・POIを先に検索してください。';
-      return;
-    }
-    if (!restGroups || !restGroups.length) {
-      panel.textContent = '休憩トリガーがありません。';
-      return;
-    }
+  ensureProjections(); // 射影計算
+  const start = pts.find(p => p.type === 'start') || pts[0];
+  const goal  = pts.find(p => p.type === 'goal')  || pts[pts.length - 1];
+  const profile = 'cycling-road';
+  const cap = Math.max(1, Number($('poiLimit')?.value) || 5);
+  
+  // 候補作成（使い回し）
+  const targetGroups = makeCandGroupsFromRestGroups(restGroups, cap);
+  let bfRankMap = null; // 総当たりランク用
 
-    ensureProjections();
-    const start = pts.find(p => p.type === 'start') || pts[0];
-    const goal  = pts.find(p => p.type === 'goal')  || pts[pts.length - 1];
-    const profile = 'cycling-road';
+  panel.textContent += '====== アルゴリズム比較 (7種・整理版) ======\n\n';
 
-    panel.textContent += '====== アルゴリズム比較 (7種・MSE統一) ======\n\n';
+  // ▼▼ 定義リストに従って順次実行 ▼▼
+  for (const cfg of ALGO_CONFIG) {
+    if (!isAlgoEnabled(cfg.id)) continue;
 
-    // 候補グループ作成
-    const capPerTrigger = Math.max(1, Number($('poiLimit')?.value) || 5);
-    const targetGroups = makeCandGroupsFromRestGroups(restGroups, capPerTrigger);
-    
-    let bfRankMap = null;
+    // API負荷軽減の待機
+    panel.textContent += `${cfg.label}...\n`;
+    await new Promise(r => setTimeout(r, (cfg.id==='dbg_linear' ? 100 : 2000)));
 
-    // ----------------------------------------------------------
-    // 1. 総当たり (Ground Truth)
-    // ----------------------------------------------------------
-    if (isAlgoEnabled('dbg_bf')) {
-      panel.textContent += '1. 総当たり\n';
-      const t0 = performance.now();
-      const orsBefore = API_USED.orsTotal;
-      const bfList = await runBruteforceOnce(start, goal, restGroups, profile);
-      const ms = performance.now() - t0;
-      const ors = API_USED.orsTotal - orsBefore;
+    const t0 = performance.now();
+    const orsBefore = API_USED.orsTotal;
+    let list = [];
 
-      bfRankMap = buildBfRankMap(bfList);
-      attachBfRank(bfList, bfRankMap);
-      bfList.sort((a, b) => (a.bfRank || 999) - (b.bfRank || 999));
+    try {
+      if (cfg.type === 'linear') {
+        // 直線距離の特別処理
+        const linGroups = topPoisPerTriggerForLinear(5);
+        list = buildLinearAlgoRows(start, goal, linGroups);
+      } else {
+        // 通常アルゴリズム実行
+        list = await cfg.func(start, goal, targetGroups, profile);
+      }
 
-      showAlgoListInPanel(panel, bfList, '1_Bruteforce');
-      pushAlgoResultsForCsv('1_BF', '総当たり', bfList, ms, ors, 0);
-      await waitApi(3000);
-    }
-
-    // ----------------------------------------------------------
-    // 2. 純粋Viterbi (Goal無視, Start考慮)
-    // ----------------------------------------------------------
-    if (isAlgoEnabled('dbg_vit_pure')) {
-      panel.textContent += '\n2. 純粋Viterbi (Goal無視)\n';
-      const t0 = performance.now();
-      const orsBefore = API_USED.orsTotal;
-
-      const list = await solveViterbiGeneric(start, goal, targetGroups, profile, {
-        ignoreStart: false,      // Start考慮
-        ignoreGoalInRank: true   // Goal無視（中間MSEのみでランク）
-      });
-      
-      const ms = performance.now() - t0;
-      const ors = API_USED.orsTotal - orsBefore;
-
-      if (list.length) {
+      // 総当たりの場合はランクマップを作成
+      if (cfg.id === 'dbg_bf') {
+        bfRankMap = buildBfRankMap(list);
+        // 総当たりだけは bf_rank 順でソートして表示
         attachBfRank(list, bfRankMap);
-        showAlgoListInPanel(panel, list.slice(0, 5), '2_Vit_Pure');
-        pushAlgoResultsForCsv('2_Vit_Pure', '純粋Viterbi(Goal無)', list, ms, ors, 0);
+        list.sort((a, b) => (a.bfRank || 999) - (b.bfRank || 999));
+      } else {
+        attachBfRank(list, bfRankMap);
       }
-      await waitApi(2000);
-    }
 
-    // ----------------------------------------------------------
-    // 3. トリガー位置との直線比較 (Linear)
-    // ----------------------------------------------------------
-    if (isAlgoEnabled('dbg_linear')) {
-      panel.textContent += '\n3. 直線比較 (Zero API)\n';
-      const t0 = performance.now();
-      
-      const linGroups = topPoisPerTriggerForLinear(5); 
-      const linList = buildLinearAlgoRows(start, goal, linGroups); 
-      const ms = performance.now() - t0;
-
-      if (linList.length) {
-        attachBfRank(linList, bfRankMap);
-        showAlgoListInPanel(panel, linList.slice(0, 5), '3_Linear');
-        pushAlgoResultsForCsv('3_Linear', '直線比較', linList, ms, 0, 0);
-      }
-    }
-
-    // ----------------------------------------------------------
-    // 4. 純粋ビームサーチ (S/G考慮, Width=5)
-    // ----------------------------------------------------------
-    if (isAlgoEnabled('dbg_beam')) {
-      panel.textContent += '\n4. 純粋ビームサーチ (Width=5)\n';
-      const t0 = performance.now();
-      const orsBefore = API_USED.orsTotal;
-
-      const list = await solveBeamSearch(start, goal, targetGroups, profile, { beamWidth: 5 });
-      
+      // 結果表示・保存
       const ms = performance.now() - t0;
       const ors = API_USED.orsTotal - orsBefore;
-
-      if (list.length) {
-        attachBfRank(list, bfRankMap);
-        showAlgoListInPanel(panel, list.slice(0, 5), '4_Beam');
-        pushAlgoResultsForCsv('4_Beam', 'ビームサーチ', list, ms, ors, 0);
-      }
-      await waitApi(2000);
-    }
-
-    // ----------------------------------------------------------
-    // 5. SG排除・純粋Viterbi (Start/Goal無視)
-    // ----------------------------------------------------------
-    if (isAlgoEnabled('dbg_vit_sg_excl')) {
-      panel.textContent += '\n5. SG排除・純粋Viterbi (S/G無視)\n';
-      const t0 = performance.now();
-      const orsBefore = API_USED.orsTotal;
-
-      const list = await solveViterbiGeneric(start, goal, targetGroups, profile, {
-        ignoreStart: true,     // Startコスト0
-        ignoreGoalInRank: true // Goalコスト順位外
-      });
       
-      const ms = performance.now() - t0;
-      const ors = API_USED.orsTotal - orsBefore;
-
       if (list.length) {
-        attachBfRank(list, bfRankMap);
-        showAlgoListInPanel(panel, list.slice(0, 5), '5_Vit_SGExcl');
-        pushAlgoResultsForCsv('5_Vit_SGExcl', 'SG排除Viterbi', list, ms, ors, 0);
+        showAlgoListInPanel(panel, list.slice(0, 5), cfg.id);
+        pushAlgoResultsForCsv(cfg.id, cfg.label, list, ms, ors, 0);
+      } else {
+        panel.textContent += '(候補なし)\n';
       }
-      await waitApi(2000);
+
+    } catch (e) {
+      console.error(e);
+      panel.textContent += `[エラー] ${e.message}\n`;
     }
-
-    // ----------------------------------------------------------
-    // 6. 純粋Viterbi + 再ランク (Start/Goal考慮)
-    // ----------------------------------------------------------
-    if (isAlgoEnabled('dbg_vit_rerank')) {
-      panel.textContent += '\n6. 純粋Viterbi + 再ランク (S/G考慮)\n';
-      const t0 = performance.now();
-      const orsBefore = API_USED.orsTotal;
-
-      const list = await solveViterbiGeneric(start, goal, targetGroups, profile, {
-        ignoreStart: false,      // Start考慮
-        ignoreGoalInRank: false  // Goal考慮
-      });
-      
-      const ms = performance.now() - t0;
-      const ors = API_USED.orsTotal - orsBefore;
-
-      if (list.length) {
-        attachBfRank(list, bfRankMap);
-        showAlgoListInPanel(panel, list.slice(0, 5), '6_Vit_Rerank');
-        pushAlgoResultsForCsv('6_Vit_Rerank', '純粋Viterbi+Rank', list, ms, ors, 0);
-      }
-      await waitApi(2000);
-    }
-
-    // ----------------------------------------------------------
-    // 7. SG排除・純粋Viterbi + 再ランク (S無視探索 → S/G考慮評価)
-    // ----------------------------------------------------------
-    if (isAlgoEnabled('dbg_vit_sg_excl_rerank')) {
-      panel.textContent += '\n7. SG排除・純粋Viterbi + 再ランク\n';
-      const t0 = performance.now();
-      const orsBefore = API_USED.orsTotal;
-
-      const list = await solveViterbiGeneric(start, goal, targetGroups, profile, {
-        ignoreStart: true,       // 探索時: Startコスト0
-        ignoreGoalInRank: false  // 評価時: Goal考慮（Startも含む全区間MSE）
-      });
-      
-      const ms = performance.now() - t0;
-      const ors = API_USED.orsTotal - orsBefore;
-
-      if (list.length) {
-        attachBfRank(list, bfRankMap);
-        showAlgoListInPanel(panel, list.slice(0, 5), '7_Vit_SGExcl_Rerank');
-        pushAlgoResultsForCsv('7_Vit_SGExcl_Rank', 'SG排除+Rank', list, ms, ors, 0);
-      }
-      await waitApi(2000);
-    }
-
-    const totalMs = performance.now() - tAll0;
-    panel.textContent += `\n====== 完了 (Total: ${totalMs.toFixed(0)}ms) ======\n`;
-
-  } catch (err) {
-    console.error(err);
-    panel.textContent += `\n[エラー] ${err.message}\n`;
   }
+
+  const totalMs = performance.now() - tTotal;
+  panel.textContent += `\n====== 完了 (Total: ${totalMs.toFixed(0)}ms) ======\n`;
+}
+
+/* ==========================================================
+   【重要】区間データ(Segments)から正しくMSEスコアを計算する関数
+   stats(細かいステップ)を使うと値が狂うため、必ずこれを使う
+   ========================================================== */
+function calcDistMseFromFeature(feature, idealDistPerLeg) {
+  const segments = feature?.properties?.segments || [];
+  
+  if (!segments || segments.length === 0) {
+    return Infinity; // データがない場合は最悪値
+  }
+
+  let sumSq = 0;
+  segments.forEach(seg => {
+    // APIの単位はmなのでkmに変換
+    const dKm = (Number(seg.distance) || 0) / 1000;
+    const diff = dKm - idealDistPerLeg;
+    sumSq += diff * diff;
+  });
+
+  return sumSq / segments.length;
 }
 </script>
 </body>
 </html>
+
