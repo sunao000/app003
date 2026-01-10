@@ -1172,34 +1172,6 @@ async function post(url, body) {
   throw new Error(`API Retry limit exceeded after ${MAX_RETRIES} attempts.`);
 }
 
-// async function post(url, body) {
-//   const r = await fetch(url, {
-//     method: 'POST',
-//     headers: {
-//       'Content-Type': 'application/json',
-//       'Authorization': ORS_KEY
-//     },
-//     body: JSON.stringify(body)
-//   });
-
-//   // ★変更点2: エラー時にステータスコードだけでなく、サーバーからのメッセージも読み取る
-//   if (!r.ok) {
-//     let errorMsg = `Error ${r.status}`;
-//     try {
-//       // サーバーが返す詳細なエラー文（"Rate limit exceeded"等）を取得
-//       const txt = await r.text();
-//       errorMsg += `: ${txt}`;
-//     } catch (e) {
-//       // text取得失敗時は無視
-//     }
-//     // CORSエラーや429エラーの内容をコンソールで見れるようにする
-//     throw new Error(errorMsg);
-//   }
-
-//   return r.json();
-// }
-
-
 /* ====== ルート表示関連 ====== */
 function clearRouteLayers(){
   Object.values(routeLayers).forEach(l=>{ if(l) map.removeLayer(l); });
@@ -2223,7 +2195,6 @@ function setScoreMetric(v){
   SCORE_METRIC = v;
   localStorage.setItem('route_score_metric', v);
 }
-
 
 function targetCumDForIndex(i, R, totalD){
   if (!Number.isFinite(totalD) || totalD<=0) return 0;
@@ -4913,6 +4884,7 @@ function calcDistMseFromFeature(feature, idealDistPerLeg) {
 </script>
 </body>
 </html>
+
 
 
 
