@@ -2959,39 +2959,60 @@ async function viterbiRouteCost(p1, p2, profile){
   return { dist, time, energy };
 }
 
-/* ===== 【修正版】総当たり (区間単位で正しく評価する版) ===== */
+/* ===== 【決定版】総当たり (データ構造自動判定・区間評価修正済み) ===== */
 async function runBruteforceOnce(start, goal, restGroups, profile){
-  // 休憩トリガーごとの POI を取得
+  // 1. データソースの確保（引数がなければグローバル変数を見る）
+  const sourceGroups = (restGroups && restGroups.length) ? restGroups : window.restGroups;
+  
+  if (!sourceGroups || !sourceGroups.length) {
+    throw new Error('総当たりエラー: 休憩グループデータ(restGroups)が見つかりません。');
+  }
+
+  // 2. 【重要】データ構造を柔軟に判定してPOIリストを取り出す
+  const poiGroups = sourceGroups.map((g, i) => {
+    // パターンA: g.pois にリストがある（元の想定）
+    if (g && Array.isArray(g.pois)) return g.pois;
+    // パターンB: g そのものがリスト（今回の可能性大）
+    if (Array.isArray(g)) return g;
+    
+    console.warn(`[BF] Group ${i} has no POIs.`, g);
+    return [];
+  });
+
+  // デバッグ: 認識できたPOIの数をコンソールに出す
+  const counts = poiGroups.map(g => g.length);
+  console.log(`[BF] 認識したPOI数: [${counts.join(', ')}]`);
+  
+  if (counts.some(c => c === 0)) {
+    alert(`警告: POIが0件の休憩区間があります。\n内訳: [${counts.join(', ')}]\n検索設定を確認してください。`);
+  }
+
+  // 組み合わせ作成設定
   const perGroupLimit = Math.max(1, Number($('poiLimit').value) || 5);
-  const poiGroups = restGroups.map(g => Array.isArray(g.pois) ? g.pois : []);
 
   // 組み合わせ作成
   const combos = enumerateCombinations(poiGroups, perGroupLimit);
   if (!combos.length) {
-    throw new Error('組み合わせ候補が作れませんでした。');
+    throw new Error('組み合わせ候補が作れませんでした（POI不足の可能性）。');
   }
 
-  // ★安全装置: 組み合わせ数が多すぎる場合は確認する
-  const HARD_LIMIT = 100; 
+  // 安全装置
+  const HARD_LIMIT = 200; 
   if (combos.length > HARD_LIMIT) {
     const estTimeMinutes = Math.round(combos.length * 2.5 / 60);
     const msg = `総当たりの組み合わせが ${combos.length} 件あります。\n` +
                 `完了まで約 ${estTimeMinutes} 分かかり、API制限を消費します。\n` +
                 `実行しますか？`;
-    if (!confirm(msg)) {
-      throw new Error('ユーザーによりキャンセルされました (組み合わせ過多)');
-    }
+    if (!confirm(msg)) throw new Error('キャンセルされました');
   }
 
-  // 理想距離（例: 全体100km ÷ 4区間 = 25km）
+  // 理想距離計算
   const ideals = getIdealPerLegs();
   const idealDistPerLeg = ideals.idealDistPerLeg; 
 
   const results = [];
   let okCount = 0;
   let failCount = 0;
-  
-  // パネルに進捗表示用
   const panel = $('algoComparePanel');
 
   for (let i = 0; i < combos.length; i++){
@@ -3001,28 +3022,23 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
       lat: p.lat, lon: p.lon, name: p.name || 'POI'
     }));
 
-    // 進捗表示
-    if (i % 10 === 0 && panel) {
+    if (i % 5 === 0 && panel) {
       panel.textContent += `..${i}/${combos.length}`;
     }
 
     try {
-      // API負荷軽減
-      await new Promise(r => setTimeout(r, 2000)); 
+      await new Promise(r => setTimeout(r, 1500)); // API負荷調整
 
-      // API呼び出し（一括計算）
       const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
-
-      // ★修正: ここで distScore を1回だけ宣言して計算
-      // 共通関数を呼ぶだけでOK
-      const distScore = calcDistMseFromFeature(feature, idealDistPerLeg);
-
-      const score = distScore;
-      const rawScore = distScore;
+      
+      // 正しいMSE計算（ヘルパー関数利用）
+      const distScore = (typeof calcDistMseFromFeature === 'function')
+        ? calcDistMseFromFeature(feature, idealDistPerLeg)
+        : 0; // ヘルパーがない場合の安全策
 
       results.push({
-        score,        // これで正しい「距離のバラつき具合」になります
-        rawScore,
+        score: distScore,
+        rawScore: distScore,
         feature,
         picks,
         picksByTrigger: cmb,
@@ -3030,19 +3046,17 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
       });
       okCount++;
     } catch (e){
-      console.warn('runBruteforceOnce: combo route fail', e);
+      console.warn('BF Route Error:', e);
       failCount++;
     }
   }
 
-  // スコアが小さい順（昇順）。NaNやInfinityは一番後ろへ。
+  // ソート
   results.sort((a, b) => {
     const sA = Number.isFinite(a.score) ? a.score : Number.MAX_VALUE;
     const sB = Number.isFinite(b.score) ? b.score : Number.MAX_VALUE;
     return sA - sB;
   });
-
-  console.log('[runBruteforceOnce] ok=', okCount, ' fail=', failCount, ' results=', results.length);
 
   return results;
 }
@@ -4919,6 +4933,7 @@ function calcDistMseFromFeature(feature, idealDistPerLeg) {
 </script>
 </body>
 </html>
+
 
 
 
