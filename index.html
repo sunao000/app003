@@ -2960,49 +2960,34 @@ async function viterbiRouteCost(p1, p2, profile){
 }
 
 /* ===== 【決定版】総当たり (データ構造自動判定・区間評価修正済み) ===== */
+/* ===== 【決定版】総当たり (データ構造自動判定・区間評価修正済み) ===== */
 async function runBruteforceOnce(start, goal, restGroups, profile){
-  // 1. データソースの確保（引数がなければグローバル変数を見る）
+  // 1. データソースの確保
   const sourceGroups = (restGroups && restGroups.length) ? restGroups : window.restGroups;
   
   if (!sourceGroups || !sourceGroups.length) {
     throw new Error('総当たりエラー: 休憩グループデータ(restGroups)が見つかりません。');
   }
 
-  // 2. 【重要】データ構造を柔軟に判定してPOIリストを取り出す
+  // 2. データ構造を柔軟に判定してPOIリストを取り出す
   const poiGroups = sourceGroups.map((g, i) => {
-    // パターンA: g.pois にリストがある（元の想定）
     if (g && Array.isArray(g.pois)) return g.pois;
-    // パターンB: g そのものがリスト（今回の可能性大）
     if (Array.isArray(g)) return g;
-    
     console.warn(`[BF] Group ${i} has no POIs.`, g);
     return [];
   });
 
-  // デバッグ: 認識できたPOIの数をコンソールに出す
-  const counts = poiGroups.map(g => g.length);
-  console.log(`[BF] 認識したPOI数: [${counts.join(', ')}]`);
-  
-  if (counts.some(c => c === 0)) {
-    alert(`警告: POIが0件の休憩区間があります。\n内訳: [${counts.join(', ')}]\n検索設定を確認してください。`);
-  }
-
   // 組み合わせ作成設定
   const perGroupLimit = Math.max(1, Number($('poiLimit').value) || 5);
-
-  // 組み合わせ作成
   const combos = enumerateCombinations(poiGroups, perGroupLimit);
-  if (!combos.length) {
-    throw new Error('組み合わせ候補が作れませんでした（POI不足の可能性）。');
-  }
+  
+  if (!combos.length) throw new Error('組み合わせ候補が作れませんでした。POI不足の可能性があります。');
 
   // 安全装置
   const HARD_LIMIT = 200; 
   if (combos.length > HARD_LIMIT) {
     const estTimeMinutes = Math.round(combos.length * 2.5 / 60);
-    const msg = `総当たりの組み合わせが ${combos.length} 件あります。\n` +
-                `完了まで約 ${estTimeMinutes} 分かかり、API制限を消費します。\n` +
-                `実行しますか？`;
+    const msg = `総当たりの組み合わせが ${combos.length} 件あります。\n完了まで約 ${estTimeMinutes} 分かかります。実行しますか？`;
     if (!confirm(msg)) throw new Error('キャンセルされました');
   }
 
@@ -3011,8 +2996,6 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
   const idealDistPerLeg = ideals.idealDistPerLeg; 
 
   const results = [];
-  let okCount = 0;
-  let failCount = 0;
   const panel = $('algoComparePanel');
 
   for (let i = 0; i < combos.length; i++){
@@ -3022,9 +3005,7 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
       lat: p.lat, lon: p.lon, name: p.name || 'POI'
     }));
 
-    if (i % 5 === 0 && panel) {
-      panel.textContent += `..${i}/${combos.length}`;
-    }
+    if (i % 5 === 0 && panel) panel.textContent += `..${i}/${combos.length}`;
 
     try {
       await new Promise(r => setTimeout(r, 1500)); // API負荷調整
@@ -3032,9 +3013,10 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
       const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
       
       // 正しいMSE計算（ヘルパー関数利用）
+      // ※関数がなければ0にする安全策付き
       const distScore = (typeof calcDistMseFromFeature === 'function')
         ? calcDistMseFromFeature(feature, idealDistPerLeg)
-        : 0; // ヘルパーがない場合の安全策
+        : 0;
 
       results.push({
         score: distScore,
@@ -3044,27 +3026,27 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
         picksByTrigger: cmb,
         stats
       });
-      okCount++;
     } catch (e){
       console.warn('BF Route Error:', e);
-      failCount++;
     }
   }
 
-  // ソート
-  results.sort((a, b) => {
-    const sA = Number.isFinite(a.score) ? a.score : Number.MAX_VALUE;
-    const sB = Number.isFinite(b.score) ? b.score : Number.MAX_VALUE;
-    return sA - sB;
-  });
+  // スコア順（昇順）ソート
+  results.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
+  
+  // 順位（bfRank）を付与
+  results.forEach((r, idx) => r.bfRank = idx + 1);
 
   return results;
 }
   
+/* ===== 【修正版】射影データ構築 ===== */
 function ensureProjections() {
   const base = routeData.arterial || routeData.fastest;
-  // ルート情報や休憩グループが存在しない場合は何もしない
-  if (!base || !Array.isArray(restGroups) || !restGroups.length) return;
+  // データソースの確認（グローバル変数もチェック）
+  const groups = (restGroups && restGroups.length) ? restGroups : window.restGroups;
+  
+  if (!base || !Array.isArray(groups) || !groups.length) return;
 
   // ルート上の累積データを構築
   const { cum, coords } = buildCums(base);
@@ -3077,28 +3059,34 @@ function ensureProjections() {
   };
 
   // 各休憩グループの POI に射影データを付ける
-for (let ti = 0; ti < restGroups.length; ti++){
-  const g = restGroups[ti];
-  const arr = g?.pois || [];
+  for (let ti = 0; ti < groups.length; ti++){
+    // POIリストを取り出し（構造判定）
+    let g = groups[ti];
+    let arr = [];
+    if (g && Array.isArray(g.pois)) arr = g.pois;
+    else if (Array.isArray(g)) arr = g;
 
-  for (let pi = 0; pi < arr.length; pi++){
-    const p = arr[pi];
-    if (!p) continue;
+    for (let pi = 0; pi < arr.length; pi++){
+      const p = arr[pi];
+      if (!p) continue;
 
-    
-    // ★追加：安定IDを埋め込む（毎回同じPOIに同じIDが付く）
-    p._triggerId = ti;
-    p._poiIdInTrigger = pi;
-    // ★ここで「名前が無ければ自動命名」
-    ensurePoiName(p, ti, pi);
+      // ID付与
+      p._triggerId = ti;
+      p._poiIdInTrigger = pi;
+      
+      // 名前が無ければ自動付与
+      if (!p.name) {
+        const type = (p.tags && p.tags.amenity) ? p.tags.amenity : 'POI';
+        p.name = `${type}_${ti}_${pi}`;
+      }
 
-    // 既に _proj があり cumD が有限値ならスキップ
-    if (p._proj && Number.isFinite(p._proj.cumD)) continue;
+      // 既に _proj があればスキップ
+      if (p._proj && Number.isFinite(p._proj.cumD)) continue;
 
-    // _proj を計算して付与
-    p._proj = projectToRoute(p.lat, p.lon, coords, cum);
+      // 射影計算
+      p._proj = projectToRoute(p.lat, p.lon, coords, cum);
+    }
   }
-}
   console.log("[ensureProjections] 射影を再計算しました");
 }
 
@@ -3171,20 +3159,17 @@ async function showLinearComboRoute(row){
   setActiveButton(null);
 }
 
-/* ===== 【修正版】CSV出力用データ蓄積（総当たりは全件出力） ===== */
+/* ===== 【修正版】CSV出力用データ蓄積 ===== */
 function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls, overpassCalls){
   if (!Array.isArray(resultList) || !resultList.length) return;
   if (!Array.isArray(window.__algoCompareRows)) window.__algoCompareRows = [];
 
-  // 1. スコア順(距離MSEが小さい順)に並べ替える
+  // 1. スコア順にソート
   const sorted = resultList.slice().sort((a, b) => {
-    const sA = (typeof a.score === 'number') ? a.score : 999999;
-    const sB = (typeof b.score === 'number') ? b.score : 999999;
-    return sA - sB;
+    return (a.score ?? 999999) - (b.score ?? 999999);
   });
 
-  // 2. 出力件数を決定する
-  // ★変更点: 「総当たり」か「直線距離」なら全件出す。それ以外は上位3件に絞る。
+  // 2. 出力件数を決定 (総当たり等は全件、他は上位3件)
   let outputList = sorted;
   if (algoCode !== 'bruteforce' && algoCode !== 'linear') {
     outputList = sorted.slice(0, 3);
@@ -3192,16 +3177,12 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
 
   // 3. 行データの生成
   outputList.forEach((r, idx)=>{
-    // 順位（リスト内の順番）
     const rank = idx + 1;
-
-    // 統計値
-    const sigmaDist   = stdDev(r.stats && r.stats.dist ? r.stats.dist : []);
-    const sigmaTime   = stdDev(r.stats && r.stats.time ? r.stats.time : []);
-    const sigmaEnergy = stdDev(r.stats && r.stats.energy ? r.stats.energy : []);
-
-    // CSV用のスコア
-    const scoreForCsv = unifiedScoreForCompare(r, null);
+    
+    // 統計値（存在チェック付き）
+    const sigmaDist   = stdDev(r.stats?.dist || []);
+    const sigmaTime   = stdDev(r.stats?.time || []);
+    const sigmaEnergy = stdDev(r.stats?.energy || []);
 
     // POI情報
     let poiList = (r.picks || r.picksByTrigger || []).filter(Boolean);
@@ -3210,28 +3191,19 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
     const poiNames = poiList.map(p => p.name || 'POI').join(' -> ');
     const poiLatLngs = poiList
       .map(p => `${(p.lat ?? p.latitude)?.toFixed(6)},${(p.lon ?? p.lng ?? p.longitude)?.toFixed(6)}`)
-      .filter(Boolean)
       .join(' | ');
 
-    // 合計距離・時間の補完
+    // 合計値の算出
     let totalDistM = 0;
     let totalTimeS = 0;
+    
+    if (typeof r.dist === 'number') totalDistM = r.dist;
+    else if (r.feature?.properties?.summary?.distance) totalDistM = Number(r.feature.properties.summary.distance);
+    else if (r.stats?.dist) totalDistM = r.stats.dist.reduce((a, b) => a + b, 0);
 
-    if (typeof r.dist === 'number') {
-      totalDistM = r.dist;
-    } else if (r.feature?.properties?.summary?.distance) {
-      totalDistM = Number(r.feature.properties.summary.distance);
-    } else if (Array.isArray(r.stats?.dist)) {
-      totalDistM = r.stats.dist.reduce((a, b) => a + b, 0);
-    }
-
-    if (typeof r.time === 'number') {
-      totalTimeS = r.time;
-    } else if (r.feature?.properties?.summary?.duration) {
-      totalTimeS = Number(r.feature.properties.summary.duration);
-    } else if (Array.isArray(r.stats?.time)) {
-      totalTimeS = r.stats.time.reduce((a, b) => a + b, 0);
-    }
+    if (typeof r.time === 'number') totalTimeS = r.time;
+    else if (r.feature?.properties?.summary?.duration) totalTimeS = Number(r.feature.properties.summary.duration);
+    else if (r.stats?.time) totalTimeS = r.stats.time.reduce((a, b) => a + b, 0);
 
     // データ蓄積
     window.__algoCompareRows.push({
@@ -3239,11 +3211,11 @@ function pushAlgoResultsForCsv(algoCode, label, resultList, elapsedMs, orsCalls,
       label,
       rank,
       bfRank: (r.bfRank ?? '-'), 
-      score: (typeof scoreForCsv === 'number') ? scoreForCsv.toFixed(4) : scoreForCsv,
+      score: (typeof r.score === 'number') ? r.score.toFixed(4) : r.score,
       rawScore: (r.rawScore != null) ? Number(r.rawScore).toFixed(4) : '',
       
       dist: (totalDistM > 0) ? (totalDistM / 1000).toFixed(2) : '',
-      time: (totalTimeS > 0) ? (totalTimeS / 60).toFixed(1)   : '',
+      time: (totalTimeS > 0) ? (totalTimeS / 60).toFixed(1)    : '',
       
       sigmaDist: (typeof sigmaDist === 'number') ? sigmaDist.toFixed(4) : '',
       sigmaTime: (typeof sigmaTime === 'number') ? sigmaTime.toFixed(4) : '',
@@ -4933,6 +4905,7 @@ function calcDistMseFromFeature(feature, idealDistPerLeg) {
 </script>
 </body>
 </html>
+
 
 
 
