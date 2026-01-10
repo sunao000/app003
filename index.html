@@ -3686,16 +3686,20 @@ function finalScoreFromStats(stats, ideals){
   return routeDistMseFromStats(stats, ideals.idealDistPerLeg);
 }
 
-// ======================================================
-// 共通：理想レグ（ideal per leg）を計算
-// ======================================================
+/* ======================================================
+   【修正版】理想レグ（ideal per leg）を計算
+   （window.restGroups だけでなく、スコープ内の restGroups も確認する）
+   ====================================================== */
 function getIdealPerLegs(){
   const cumTotals = window.__cumTotals || {};
   const totalDkm  = (Number(cumTotals.D) || 0) / 1000;
   const totalTmin = (Number(cumTotals.T) || 0) / 60;
   const totalEkJ  = Number(cumTotals.E)  || 0;
 
-  const T = Array.isArray(window.restGroups) ? window.restGroups.length : 0;
+  // ★修正: window.restGroups が未定義なら、グローバルの restGroups を見に行く
+  const groups = (typeof restGroups !== 'undefined' ? restGroups : window.restGroups) || [];
+  
+  const T = Array.isArray(groups) ? groups.length : 0;
   const R = T + 1;
 
   return {
@@ -4915,5 +4919,6 @@ function calcDistMseFromFeature(feature, idealDistPerLeg) {
 </script>
 </body>
 </html>
+
 
 
