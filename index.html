@@ -2971,6 +2971,18 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
     throw new Error('組み合わせ候補が作れませんでした。');
   }
 
+  // ★安全装置: 組み合わせ数が多すぎる場合は確認する
+  const HARD_LIMIT = 100; 
+  if (combos.length > HARD_LIMIT) {
+    const estTimeMinutes = Math.round(combos.length * 2.5 / 60);
+    const msg = `総当たりの組み合わせが ${combos.length} 件あります。\n` +
+                `完了まで約 ${estTimeMinutes} 分かかり、API制限を消費します。\n` +
+                `実行しますか？`;
+    if (!confirm(msg)) {
+      throw new Error('ユーザーによりキャンセルされました (組み合わせ過多)');
+    }
+  }
+
   // 理想距離（例: 全体100km ÷ 4区間 = 25km）
   const ideals = getIdealPerLegs();
   const idealDistPerLeg = ideals.idealDistPerLeg; 
@@ -2978,21 +2990,32 @@ async function runBruteforceOnce(start, goal, restGroups, profile){
   const results = [];
   let okCount = 0;
   let failCount = 0;
+  
+  // パネルに進捗表示用
+  const panel = $('algoComparePanel');
 
-  for (const cmb of combos){
+  for (let i = 0; i < combos.length; i++){
+    const cmb = combos[i];
     const picks = cmb.filter(Boolean);
     const wps = [start, ...picks, goal].map(p => ({
       lat: p.lat, lon: p.lon, name: p.name || 'POI'
     }));
 
+    // 進捗表示
+    if (i % 10 === 0 && panel) {
+      panel.textContent += `..${i}/${combos.length}`;
+    }
+
     try {
+      // API負荷軽減
+      await new Promise(r => setTimeout(r, 2000)); 
+
       // API呼び出し（一括計算）
       const {feature, stats} = await routeLegStatsForWaypoints(wps, profile);
 
-      let distScore = 0;
-
-      // 共通関数を呼ぶだけでOKになります
-const distScore = calcDistMseFromFeature(feature, idealDistPerLeg);
+      // ★修正: ここで distScore を1回だけ宣言して計算
+      // 共通関数を呼ぶだけでOK
+      const distScore = calcDistMseFromFeature(feature, idealDistPerLeg);
 
       const score = distScore;
       const rawScore = distScore;
@@ -3012,7 +3035,7 @@ const distScore = calcDistMseFromFeature(feature, idealDistPerLeg);
     }
   }
 
-// スコアが小さい順（昇順）。NaNやInfinityは一番後ろへ。
+  // スコアが小さい順（昇順）。NaNやInfinityは一番後ろへ。
   results.sort((a, b) => {
     const sA = Number.isFinite(a.score) ? a.score : Number.MAX_VALUE;
     const sB = Number.isFinite(b.score) ? b.score : Number.MAX_VALUE;
@@ -4892,4 +4915,5 @@ function calcDistMseFromFeature(feature, idealDistPerLeg) {
 </script>
 </body>
 </html>
+
 
