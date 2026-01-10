@@ -4566,6 +4566,9 @@ window.drawManualComparison = async function() {
  * * @param options.ignoreStart trueならStartコストを0にする(探索時)
  * @param options.ignoreGoalInRank trueならGoal区間を順位決定に含めない(再評価時)
  */
+/* ==========================================================
+   【修正版】汎用Viterbiソルバー (Goalエッジログ対応)
+   ========================================================== */
 async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   const T = Array.isArray(groups) ? groups.length : 0;
   if (!T) return [];
@@ -4584,27 +4587,25 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
     const firstPoi = groups[0][i];
     let initialCost = 0;
 
-    // Startを考慮する場合のみコスト計算
     if (!ignoreStart) {
       try {
         const leg = await apiFunc(start, firstPoi, profile);
         const diff = leg.distKm - idealDistPerLeg;
-        initialCost = diff * diff; // MSE
+        initialCost = diff * diff; 
       } catch(e) {}
     } else {
-      // Start無視 (SG排除) の場合はコスト0
       initialCost = 0;
     }
 
     currentPaths[i] = {
       picks: [firstPoi],
-      currentCost: initialCost, // 探索用の累積コスト
+      currentCost: initialCost,
       lastNode: firstPoi,
       valid: true
     };
   }
 
-  // --- Step 1..T-1: 中間層 (Viterbi: 各POIでBest1を残す) ---
+  // --- Step 1..T-1: 中間層 (Viterbi) ---
   for (let t = 1; t < T; t++) {
     const nextGroup = groups[t];
     const nextPaths = new Array(nextGroup.length).fill(null);
@@ -4619,7 +4620,6 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
         if (!parent || !parent.valid) continue;
 
         try {
-          // API負荷軽減
           await new Promise(r => setTimeout(r, 20)); 
           const leg = await apiFunc(parent.lastNode, nextPoi, profile);
           
@@ -4642,13 +4642,24 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
     currentPaths = nextPaths;
   }
 
-  // --- Final: ランク付け ---
+  // --- Final: ランク付け前の準備 ---
   const candidates = currentPaths.filter(p => p && p.valid);
   
-  // オプションに応じて「Goalを含めるか」「累積コストを使うか」を制御
+  // ★追加: ログ用に「最後のPOI -> Goal」のエッジを計算 (API呼び出し)
+  // これにより、ViterbiエッジCSVにゴールまでの区間が記録されます
+  if (candidates.length > 0) {
+    for (const cand of candidates) {
+        try {
+            await apiFunc(cand.lastNode, goal, profile);
+        } catch(e) {
+             console.warn('Goal edge log failed', e);
+        }
+    }
+  }
+
   return finalizeAndRank(start, goal, candidates, idealDistPerLeg, profile, { 
     includeGoalScore: !ignoreGoalInRank,
-    useAccumulatedCost: ignoreGoalInRank // Goal無視なら探索時の累積コスト(Start抜き)を使う
+    useAccumulatedCost: ignoreGoalInRank 
   });
 }
 
@@ -4656,6 +4667,9 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
  * 【純粋ビームサーチ (Beam Search)】
  * 対策4（対策G）相当。Start/Goal考慮、Beam幅指定可。
  */
+/* ==========================================================
+   【修正版】純粋ビームサーチ (Goalエッジログ対応)
+   ========================================================== */
 async function solveBeamSearch(start, goal, groups, profile, options = {}) {
   const T = Array.isArray(groups) ? groups.length : 0;
   if (!T) return [];
@@ -4714,7 +4728,14 @@ async function solveBeamSearch(start, goal, groups, profile, options = {}) {
     currentPaths = allCandidates.slice(0, BEAM_WIDTH);
   }
 
-  // ビームサーチは常に「Start/Goal考慮」の最終スコアで評価
+  // ★追加: ログ用に「最後のPOI -> Goal」のエッジを計算
+  // ビームサーチに残った上位候補についてゴール接続をログに残す
+  for (const cand of currentPaths) {
+      try {
+          await apiFunc(cand.lastNode, goal, profile);
+      } catch(e) {}
+  }
+
   return finalizeAndRank(start, goal, currentPaths, idealDistPerLeg, profile, { 
     includeGoalScore: true,
     useAccumulatedCost: false
@@ -4905,6 +4926,7 @@ function calcDistMseFromFeature(feature, idealDistPerLeg) {
 </script>
 </body>
 </html>
+
 
 
 
