@@ -243,14 +243,14 @@ button.del{background:#d9534f;color:#fff;border:none;border-radius:4px;padding:0
 
 <div style="display:flex; flex-direction:column; gap:4px; margin:8px 0; padding:8px; background:#f9f9f9; border:1px solid #ddd; border-radius:4px;">
 <div style="display:flex; flex-direction:column; gap:4px; margin:8px 0; padding:8px; background:#f9f9f9; border:1px solid #ddd; border-radius:4px;">
-  <div style="font-weight:bold; margin-bottom:4px; color:#555;">比較するアルゴリズム</div>
-  <label><input type="checkbox" id="dbg_bf" checked> 1. 総当たり (Ground Truth)</label>
-  <label><input type="checkbox" id="dbg_vit_pure" checked> 2. 純粋Viterbi (標準)</label>
- <label><input type="checkbox" id="dbg_vit_pure_rerank" checked> 3. 純粋Viterbi ＋ 再ランク</label>
-  <label><input type="checkbox" id="dbg_linear" checked> 4. 直線比較 (Zero API)</label>
-  <label><input type="checkbox" id="dbg_beam" checked> 5. 純粋ビームサーチ (Width=5)</label>
-  <label><input type="checkbox" id="dbg_vit_sg_excl" checked> 6. SG排除・純粋Viterbi</label>
-  <label><input type="checkbox" id="dbg_vit_sg_excl_rerank" checked> 7. SG排除・純粋Viterbi + 再ランク</label>
+ <div style="font-weight:bold; margin-bottom:4px; color:#555;">比較するアルゴリズム</div>
+<label><input type="checkbox" id="dbg_bf" checked> 1. 総当たり (Ground Truth)</label>
+<label><input type="checkbox" id="dbg_vit_pure" checked> 2. 純粋Viterbi (高速)</label>
+<label><input type="checkbox" id="dbg_vit_pure_rerank" checked> 3. 純粋Viterbi + 再ランク</label>
+<label><input type="checkbox" id="dbg_linear" checked> 4. 直線比較 (Zero API)</label>
+<label><input type="checkbox" id="dbg_beam" checked> 5. 純粋ビームサーチ (Width=5)</label>
+<label><input type="checkbox" id="dbg_vit_sg_excl" checked> 6. SG排除・純粋Viterbi</label>
+<label><input type="checkbox" id="dbg_vit_sg_excl_rerank" checked> 7. SG排除・純粋Viterbi + 再ランク</label>
 </div>
 
 <!-- サマリー -->
@@ -4902,41 +4902,41 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
    UI/機能はそのままに、共通処理をまとめて記述量を削減
    ===================================================================== */
 
-/* ===== 【修正版】アルゴリズム定義 (キャッシュ連携フラグ追加) ===== */
+/* ===== 【修正版】アルゴリズム定義 (番号整理版) ===== */
 const ALGO_CONFIG = [
   // 1. 総当たり
   { id: 'dbg_bf', label: '1. 総当たり', func: runBruteforceOnce },
 
-  // 2. 純粋Viterbi (高速化: パス累積) -> 計算結果をキャッシュに保存する
+  // 2. 純粋Viterbi (高速化: パス累積) -> 計算結果をキャッシュに保存
   { id: 'dbg_vit_pure', label: '2. 純粋Viterbi (高速)', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { 
         usePathAccumulation: true, 
-        saveToCache: true,      // ★保存フラグ
+        saveToCache: true,      // 保存
         onProgress: cb 
     }) 
   },
 
-  // 3. 純粋Viterbi (従来: 再ランク) -> キャッシュがあれば使う
-  { id: 'dbg_vit_pure_rerank', label: '3. 純粋Viterbi (再ランク)', 
+  // 3. 純粋Viterbi + 再ランク (旧2.5) -> キャッシュがあれば利用
+  { id: 'dbg_vit_pure_rerank', label: '3. 純粋Viterbi + 再ランク', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { 
         usePathAccumulation: false, 
-        tryUseCache: true,      // ★利用試行フラグ
+        tryUseCache: true,      // 利用
         onProgress: cb 
     }) 
   },
 
-  // 4. 直線比較
+  // 4. 直線比較 (旧3)
   { id: 'dbg_linear', label: '4. 直線比較', type: 'linear' }, 
 
-  // 5. 純粋ビームサーチ
+  // 5. 純粋ビームサーチ (旧4)
   { id: 'dbg_beam', label: '5. 純粋ビーム', 
     func: (s,g,gr,p, cb) => solveBeamSearch(s,g,gr,p, { beamWidth:5, onProgress: cb }) },
 
-  // 6. SG排除Vit
+  // 6. SG排除Vit (旧5)
   { id: 'dbg_vit_sg_excl', label: '6. SG排除Vit', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { ignoreStart:true, ignoreGoalInRank:true, onProgress: cb }) },
 
-  // 7. SG排除+再ランク
+  // 7. SG排除+再ランク (旧6)
   { id: 'dbg_vit_sg_excl_rerank', label: '7. SG排除+再ランク', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { ignoreStart:true, onProgress: cb }) },
 ];
@@ -5291,3 +5291,4 @@ window.downloadViterbiEdgesCsv = downloadViterbiLogCsv;
 </script>
 </body>
 </html>
+
