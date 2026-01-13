@@ -4397,25 +4397,27 @@ window.drawManualComparison = async function() {
  * @param options.ignoreGoalInRank trueならGoal区間を順位決定に含めない(再評価時)
  */
 /* ==========================================================
-   【完全修正版】汎用Viterbiソルバー (計測内訳対応版)
+   【完全修正版】汎用Viterbiソルバー (コスト配分ロジック実装済み)
    ========================================================== */
 async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   const T = Array.isArray(groups) ? groups.length : 0;
   if (!T) return [];
 
   const ignoreStart = options.ignoreStart === true;
+  // ignoreGoalInRank: trueなら「順位は確定済み(描画のみ)」、falseなら「これから順位決定(再ランク)」
   const ignoreGoalInRank = options.ignoreGoalInRank === true;
   const ignoreGoalEdge = options.ignoreGoalEdge === true;
   const usePathAccumulation = (options.usePathAccumulation === true) && !ignoreStart;
+  
   const saveToCache = options.saveToCache === true;
   const tryUseCache = options.tryUseCache === true;
-  
+
   const apiFunc = calcLegCostWithApi; 
   const ideals = getIdealPerLegs();
   const idealDistPerLeg = ideals.idealDistPerLeg; 
   const currentCacheType = ignoreStart ? 'sg_excluded' : 'standard';
 
-  // --- 計測開始 ---
+  // --- [Phase 1] 候補探索 (Candidates) ---
   const tStart = performance.now();
   const orsStart = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
   const waitStart = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
@@ -4429,11 +4431,11 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
       if (c.type === currentCacheType) {
           console.log(`[Viterbi] Using cached candidates (${c.type}).`);
           candidates = c.candidates;
-          cachedBreakdown = c.breakdown; // 保存されていた探索コスト
+          cachedBreakdown = c.breakdown; 
       }
   }
 
-  // 2. 探索フェーズ (組み合わせ決定)
+  // 2. キャッシュがない場合: 探索ループ実行
   if (!candidates) {
       const mergeStats = (s1, s2) => ({
           dist:   [...(s1?.dist||[]),   ...(s2?.dist||[])],
@@ -4493,7 +4495,6 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
               const leg = await apiFunc(parent.lastNode, nextPoi, profile);
               const diff = leg.distKm - idealDistPerLeg;
               const newCost = parent.currentCost + (diff * diff);
-
               if (newCost < bestCost) {
                 bestCost = newCost;
                 bestPath = {
@@ -4517,19 +4518,19 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
       candidates = currentPaths.filter(p => p && p.valid);
   }
 
-  // --- 探索終了時点の計測 ---
-  const tSearchEnd = performance.now();
-  const orsSearchEnd = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
-  const waitSearchEnd = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
+  // --- Phase 1 終了時点の計測 ---
+  const tPhase1End = performance.now();
+  const orsPhase1End = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
+  const waitPhase1End = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
-  // キャッシュ保存用データ作成
-  // (今回計算したならその差分、キャッシュ利用ならキャッシュの値をそのまま使う)
-  let searchBreakdown = cachedBreakdown; 
-  if (!searchBreakdown) {
-      searchBreakdown = {
-          ors: orsSearchEnd - orsStart,
-          wait: waitSearchEnd - waitStart,
-          time: tSearchEnd - tStart
+  // キャッシュ保存用データ (Phase 1 のコストのみ)
+  // もしキャッシュ利用中なら、保存されていたコストをそのまま使う
+  let phase1Breakdown = cachedBreakdown; 
+  if (!phase1Breakdown) {
+      phase1Breakdown = {
+          ors: orsPhase1End - orsStart,
+          wait: waitPhase1End - waitStart,
+          time: tPhase1End - tStart
       };
   }
 
@@ -4538,21 +4539,26 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
       window.__viterbiIntermediateCache = {
           type: currentCacheType,
           candidates: candidates,
-          breakdown: searchBreakdown // 探索コストを保存
+          breakdown: phase1Breakdown // Phase 1コストを保存
       };
       console.log(`[Viterbi] Candidates & breakdown cached (${currentCacheType}).`);
   }
 
-  // 3. 描画フェーズ (ルート詳細化)
+
+  // --- [Phase 2] 仕上げ (Finalize / Rerank / Draw) ---
   const finalResults = [];
+  
+  // Phase 2 開始
+  const tPhase2Start = performance.now();
+  const orsPhase2Start = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
+  const waitPhase2Start = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
   if (usePathAccumulation && candidates.length > 0) {
-    // A. パス累積モード
+    // A. パス累積モード (通常、順位決定に関わるのでDecisionに含む)
     for (const cand of candidates) {
         try { 
           const leg = await apiFunc(cand.lastNode, goal, profile);
           
-          // (中略: 累積処理は変更なし)
           const mergeStats = (s1, s2) => ({
              dist:   [...(s1?.dist||[]),   ...(s2?.dist||[])],
              time:   [...(s1?.time||[]),   ...(s2?.time||[])],
@@ -4562,11 +4568,8 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
           const baseCoords = cand.accCoords || [];
           const baseSegs = cand.accSegments || [];
           const finalStats = mergeStats(baseStats, leg.rawStats);
-          const finalCoords = (baseCoords.length) 
-             ? baseCoords.concat((leg.rawFeature?.geometry?.coordinates||[]).slice(1)) 
-             : leg.rawFeature?.geometry?.coordinates;
+          const finalCoords = (baseCoords.length) ? baseCoords.concat((leg.rawFeature?.geometry?.coordinates||[]).slice(1)) : leg.rawFeature?.geometry?.coordinates;
           const finalSegments = [...baseSegs, ...(leg.rawFeature?.properties?.segments||[])];
-          
           let sumSq=0, count=0;
           finalSegments.forEach(seg => {
              const d=(Number(seg.distance)||0)/1000;
@@ -4574,7 +4577,6 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
              count++;
           });
           const totalMse = (count>0) ? sumSq/count : Infinity;
-
           const constructedFeature = {
               type: "Feature", properties: { summary: { distance: finalSegments.reduce((s,x)=>s+(x.distance||0),0), duration: finalSegments.reduce((s,x)=>s+(x.duration||0),0) }, segments: finalSegments },
               geometry: { type: "LineString", coordinates: finalCoords }
@@ -4590,7 +4592,7 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
     }
   } 
   else if (candidates.length > 0) {
-     // B. 従来/再ランクモード
+     // B. 従来モード (再ランク or SG排除)
      if (!ignoreGoalEdge) {
          for (const cand of candidates) {
              try { await apiFunc(cand.lastNode, goal, profile); } catch(e) {}
@@ -4607,30 +4609,53 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   finalResults.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
   finalResults.forEach((r, idx) => r.rank = idx + 1);
 
-  // --- 最終計測 & 内訳データ添付 ---
+  // --- 最終計測 & コスト振り分け ---
   const tEnd = performance.now();
   const orsEnd = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
   const waitEnd = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
 
-  // 今回の実行における「描画フェーズ」のコスト
-  // (キャッシュ利用時は tSearchEnd と tStart がほぼ同じになるので、全体が描画コストになる)
-  const drawOrs  = orsEnd - orsSearchEnd;
-  const drawWait = waitEnd - waitSearchEnd;
-  const drawTime = tEnd - tSearchEnd;
+  // Phase 2 単体のコスト
+  const p2Ors  = orsEnd - orsPhase2Start;
+  const p2Wait = waitEnd - waitPhase2Start;
+  const p2Time = tEnd - tPhase2Start;
+
+  // ★振り分けロジックの核心
+  // Algo 6 (SG排除) -> ignoreGoalInRank=true -> Phase 2は「順位に影響しない描画」 -> Draw
+  // Algo 7 (再ランク) -> ignoreGoalInRank=false -> Phase 2は「真のスコア計算」 -> Search
+  
+  let finalSearchOrs, finalSearchWait, finalSearchTime;
+  let finalDrawOrs, finalDrawWait, finalDrawTime;
+
+  if (ignoreGoalInRank === true) {
+      // 6. SG排除: Phase 1だけが探索、Phase 2は描画
+      finalSearchOrs  = phase1Breakdown.ors;
+      finalSearchWait = phase1Breakdown.wait;
+      finalSearchTime = phase1Breakdown.time;
+      
+      finalDrawOrs  = p2Ors;
+      finalDrawWait = p2Wait;
+      finalDrawTime = p2Time;
+  } else {
+      // 7. 再ランク (他): Phase 1もPhase 2も「決定」に必要なコスト
+      finalSearchOrs  = phase1Breakdown.ors + p2Ors;
+      finalSearchWait = phase1Breakdown.wait + p2Wait;
+      finalSearchTime = phase1Breakdown.time + p2Time;
+      
+      finalDrawOrs  = 0;
+      finalDrawWait = 0;
+      finalDrawTime = 0;
+  }
 
   // 戻り値に内訳を添付
   finalResults._breakdown = {
-      // 探索 (キャッシュ利用時はキャッシュの値、そうでなければ今回の値)
-      searchOrs:  searchBreakdown.ors,
-      searchWait: searchBreakdown.wait,
-      searchTime: searchBreakdown.time,
+      searchOrs:  finalSearchOrs,
+      searchWait: finalSearchWait,
+      searchTime: finalSearchTime,
       
-      // 描画 (今回の後半部分)
-      drawOrs:  drawOrs,
-      drawWait: drawWait,
-      drawTime: drawTime,
+      drawOrs:  finalDrawOrs,
+      drawWait: finalDrawWait,
+      drawTime: finalDrawTime,
 
-      // フラグ
       isCached: !!cachedBreakdown
   };
 
@@ -5269,6 +5294,7 @@ window.downloadViterbiEdgesCsv = downloadViterbiLogCsv;
 </script>
 </body>
 </html>
+
 
 
 
