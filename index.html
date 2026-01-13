@@ -4816,12 +4816,12 @@ async function finalizeAndRank(start, goal, candidates, idealDist, profile, opti
    UI/機能はそのままに、共通処理をまとめて記述量を削減
    ===================================================================== */
 
-/* ===== 【修正版】アルゴリズム定義 (番号整理版) ===== */
+/* ===== 【修正版】アルゴリズム定義 (6,7番のキャッシュ・省略設定を追加) ===== */
 const ALGO_CONFIG = [
   // 1. 総当たり
   { id: 'dbg_bf', label: '1. 総当たり', func: runBruteforceOnce },
 
-  // 2. 純粋Viterbi (高速化: パス累積) -> 計算結果をキャッシュに保存
+  // 2. 純粋Viterbi (高速) -> 保存
   { id: 'dbg_vit_pure', label: '2. 純粋Viterbi (高速)', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { 
         usePathAccumulation: true, 
@@ -4830,7 +4830,7 @@ const ALGO_CONFIG = [
     }) 
   },
 
-  // 3. 純粋Viterbi + 再ランク (旧2.5) -> キャッシュがあれば利用
+  // 3. 純粋Viterbi + 再ランク -> 利用
   { id: 'dbg_vit_pure_rerank', label: '3. 純粋Viterbi + 再ランク', 
     func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { 
         usePathAccumulation: false, 
@@ -4839,20 +4839,33 @@ const ALGO_CONFIG = [
     }) 
   },
 
-  // 4. 直線比較 (旧3)
+  // 4. 直線
   { id: 'dbg_linear', label: '4. 直線比較', type: 'linear' }, 
 
-  // 5. 純粋ビームサーチ (旧4)
+  // 5. ビーム
   { id: 'dbg_beam', label: '5. 純粋ビーム', 
     func: (s,g,gr,p, cb) => solveBeamSearch(s,g,gr,p, { beamWidth:5, onProgress: cb }) },
 
-  // 6. SG排除Vit (旧5)
-  { id: 'dbg_vit_sg_excl', label: '6. SG排除Vit', 
-    func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { ignoreStart:true, ignoreGoalInRank:true, onProgress: cb }) },
+  // 6. SG排除Vit -> ★保存 & Goal計算スキップ
+  { id: 'dbg_vit_sg_excl', label: '6. SG排除・純粋Viterbi', 
+    func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { 
+        ignoreStart:true, 
+        ignoreGoalInRank:true, 
+        ignoreGoalEdge: true,   // ★API節約：Goal区間を計算しない
+        saveToCache: true,      // ★保存
+        onProgress: cb 
+    }) 
+  },
 
-  // 7. SG排除+再ランク (旧6)
+  // 7. SG排除+再ランク -> ★利用 & 再評価
   { id: 'dbg_vit_sg_excl_rerank', label: '7. SG排除+再ランク', 
-    func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { ignoreStart:true, onProgress: cb }) },
+    func: (s,g,gr,p, cb) => solveViterbiGeneric(s,g,gr,p, { 
+        ignoreStart:true, 
+        ignoreGoalEdge: true,   // ★キャッシュ条件一致のため必要
+        tryUseCache: true,      // ★利用
+        onProgress: cb 
+    }) 
+  },
 ];
   
 function isAlgoEnabled(id){
@@ -5211,6 +5224,7 @@ window.downloadViterbiEdgesCsv = downloadViterbiLogCsv;
 </script>
 </body>
 </html>
+
 
 
 
