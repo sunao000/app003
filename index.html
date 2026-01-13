@@ -4444,6 +4444,7 @@ window.drawManualComparison = async function() {
  */
 /* ==========================================================
    【修正版】汎用Viterbiソルバー (キャッシュ＆パス累積統合版)
+   ※この関数を上書きしてください（重複コードを削除）
    ========================================================== */
 async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   const T = Array.isArray(groups) ? groups.length : 0;
@@ -4453,7 +4454,7 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   const ignoreGoalInRank = options.ignoreGoalInRank === true;
   const usePathAccumulation = (options.usePathAccumulation === true) && !ignoreStart;
   
-  // ★キャッシュ制御の変数
+  // キャッシュ制御の変数
   const saveToCache = options.saveToCache === true;
   const tryUseCache = options.tryUseCache === true;
 
@@ -4468,7 +4469,7 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   // 「キャッシュを使え」指示があり、かつ「有効なキャッシュがある」場合
   if (tryUseCache && window.__viterbiIntermediateCache) {
       const c = window.__viterbiIntermediateCache;
-      // 条件（Start/Goal無視など）が一致するか簡易チェック（今回は "standard" キーで管理）
+      // 条件（Start/Goal無視など）が一致するか簡易チェック
       if (c.type === 'standard' && !ignoreStart && !ignoreGoalInRank) {
           console.log("[Viterbi] Using cached candidates to skip search loop.");
           candidates = c.candidates;
@@ -4478,7 +4479,6 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
 
   // キャッシュがない場合は、通常通り探索ループを実行
   if (!candidates) {
-      // --- 計測用: 探索部分のみのコスト ---
       const tSearchStart = performance.now();
       const orsStart = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
 
@@ -4507,7 +4507,7 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
             const leg = await apiFunc(start, firstPoi, profile);
             const diff = leg.distKm - idealDistPerLeg;
             initialCost = diff * diff; 
-            if (usePathAccumulation || saveToCache) { // saveToCacheの場合も累積データを作っておく
+            if (usePathAccumulation || saveToCache) {
                 if(leg.rawStats) accStats = leg.rawStats;
                 if(leg.rawFeature) {
                     accCoords = leg.rawFeature.geometry.coordinates;
@@ -4569,14 +4569,13 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
       candidates = currentPaths.filter(p => p && p.valid);
 
       // --- キャッシュ保存 ---
-      // 「標準的な探索」を行った場合のみ保存する（変則オプション時は保存しない）
       if (saveToCache && !ignoreStart && !ignoreGoalInRank) {
           const tSearchEnd = performance.now();
           const orsEnd = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
           
           window.__viterbiIntermediateCache = {
               type: 'standard',
-              candidates: candidates, // 計算済みの候補オブジェクト（accStats等含む）
+              candidates: candidates,
               metrics: {
                   ms: tSearchEnd - tSearchStart,
                   ors: orsEnd - orsStart
@@ -4587,11 +4586,9 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   }
 
   // === ここからは「高速版(累積)」か「再ランク版(API)」かで分岐 ===
-  
   const finalResults = [];
 
   // A. パス累積モード (APIコールなしでFeature構築)
-  // ※キャッシュ利用時も、candidates内にaccSegments等のデータが残っているので機能する
   if (usePathAccumulation && candidates.length > 0) {
     for (const cand of candidates) {
         try { 
@@ -4604,7 +4601,7 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
              energy: [...(s1?.energy||[]), ...(s2?.energy||[])]
           });
           
-          // cand.accStats が無い場合（キャッシュからの復元ミス等）へのガード
+          // cand.accStats が無い場合へのガード
           const baseStats = cand.accStats || {dist:[],time:[],energy:[]};
           const baseCoords = cand.accCoords || [];
           const baseSegs = cand.accSegments || [];
@@ -4672,85 +4669,9 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   finalResults.forEach((r, idx) => r.rank = idx + 1);
 
   // ★重要：キャッシュを使った場合は、呼び出し元に「これはキャッシュ利用結果だよ」と伝える
-  // (呼び出し元で時間を合算して表示するため)
   if (cachedMetrics) {
       finalResults._cachedMetrics = cachedMetrics;
   }
-
-  return finalResults;
-}
-
-  // --- Final Step: Candidates -> Goal ---
-  const candidates = currentPaths.filter(p => p && p.valid);
-  const finalResults = [];
-
-  // 1. パス累積モード (高速・Zero API)
-  if (usePathAccumulation && candidates.length > 0) {
-    for (const cand of candidates) {
-        try { 
-          const leg = await apiFunc(cand.lastNode, goal, profile);
-          
-          const finalStats = mergeStats(cand.accStats, leg.rawStats);
-          const finalCoords = mergeCoords(cand.accCoords, leg.rawFeature?.geometry?.coordinates);
-          const finalSegments = mergeSegments(cand.accSegments, leg.rawFeature?.properties?.segments);
-
-          // 正確なMSE計算 (Segmentsから)
-          let sumSq = 0;
-          let count = 0;
-          finalSegments.forEach(seg => {
-             const d = (Number(seg.distance)||0)/1000;
-             const df = d - idealDistPerLeg;
-             sumSq += df*df;
-             count++;
-          });
-          const totalMse = (count>0) ? sumSq/count : Infinity;
-
-          // Feature手動構築
-          const constructedFeature = {
-              type: "Feature",
-              properties: {
-                  summary: {
-                      distance: finalSegments.reduce((s,x)=>s+(x.distance||0),0),
-                      duration: finalSegments.reduce((s,x)=>s+(x.duration||0),0)
-                  },
-                  segments: finalSegments
-              },
-              geometry: { type: "LineString", coordinates: finalCoords }
-          };
-
-          finalResults.push({
-             rank: 0,
-             score: totalMse,
-             displayScore: totalMse,
-             poi_names: cand.picks.map(p => p.name).join(' -> '),
-             poi_latlngs: cand.picks.map(p => `${p.lat},${p.lon}`).join(' | '),
-             sigmaEnergy: stdDev(finalStats.energy),
-             dist: finalStats.dist,
-             stats: finalStats,
-             picks: cand.picks,
-             feature: constructedFeature 
-          });
-        } catch(e) { console.error(e); }
-    }
-  } 
-  // 2. 従来モード (再ランク・API再コール)
-  else if (candidates.length > 0) {
-     // まず全候補に対して Goal エッジを計算だけしておく（コスト確定・ログ記録のため）
-     for (const cand of candidates) {
-         try {
-           await apiFunc(cand.lastNode, goal, profile);
-         } catch(e) {}
-     }
-     // 最後にルートを引き直す関数へ委譲
-     return finalizeAndRank(start, goal, candidates, idealDistPerLeg, profile, { 
-        includeGoalScore: !ignoreGoalInRank,
-        useAccumulatedCost: ignoreGoalInRank 
-     });
-  }
-
-  // ソート
-  finalResults.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
-  finalResults.forEach((r, idx) => r.rank = idx + 1);
 
   return finalResults;
 }
@@ -5291,4 +5212,5 @@ window.downloadViterbiEdgesCsv = downloadViterbiLogCsv;
 </script>
 </body>
 </html>
+
 
