@@ -4446,15 +4446,18 @@ window.drawManualComparison = async function() {
    【修正版】汎用Viterbiソルバー (キャッシュ＆パス累積統合版)
    ※この関数を上書きしてください（重複コードを削除）
    ========================================================== */
+/* ==========================================================
+   【完全修正版】汎用Viterbiソルバー (6番のPOIのみモード対応)
+   ========================================================== */
 async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   const T = Array.isArray(groups) ? groups.length : 0;
   if (!T) return [];
 
   const ignoreStart = options.ignoreStart === true;
   const ignoreGoalInRank = options.ignoreGoalInRank === true;
+  const ignoreGoalEdge = options.ignoreGoalEdge === true;
+
   const usePathAccumulation = (options.usePathAccumulation === true) && !ignoreStart;
-  
-  // キャッシュ制御の変数
   const saveToCache = options.saveToCache === true;
   const tryUseCache = options.tryUseCache === true;
 
@@ -4462,27 +4465,24 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
   const ideals = getIdealPerLegs();
   const idealDistPerLeg = ideals.idealDistPerLeg; 
 
-  // --- キャッシュ利用チェック ---
+  const currentCacheType = ignoreStart ? 'sg_excluded' : 'standard';
+
   let candidates = null;
   let cachedMetrics = null;
 
-  // 「キャッシュを使え」指示があり、かつ「有効なキャッシュがある」場合
   if (tryUseCache && window.__viterbiIntermediateCache) {
       const c = window.__viterbiIntermediateCache;
-      // 条件（Start/Goal無視など）が一致するか簡易チェック
-      if (c.type === 'standard' && !ignoreStart && !ignoreGoalInRank) {
-          console.log("[Viterbi] Using cached candidates to skip search loop.");
+      if (c.type === currentCacheType) {
+          console.log(`[Viterbi] Using cached candidates (${c.type}).`);
           candidates = c.candidates;
           cachedMetrics = c.metrics;
       }
   }
 
-  // キャッシュがない場合は、通常通り探索ループを実行
   if (!candidates) {
       const tSearchStart = performance.now();
       const orsStart = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
 
-      // --- Helper Functions ---
       const mergeStats = (s1, s2) => ({
           dist:   [...(s1?.dist||[]),   ...(s2?.dist||[])],
           time:   [...(s1?.time||[]),   ...(s2?.time||[])],
@@ -4495,7 +4495,6 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
       };
       const mergeSegments = (seg1, seg2) => [...(seg1||[]), ...(seg2||[])];
 
-      // --- Step 0 ---
       let currentPaths = new Array(groups[0].length).fill(null);
       for (let i = 0; i < groups[0].length; i++) {
         const firstPoi = groups[0][i];
@@ -4525,7 +4524,6 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
         };
       }
 
-      // --- Step 1..T-1 ---
       for (let t = 1; t < T; t++) {
         if (options.onProgress) options.onProgress(t, T);
         const nextGroup = groups[t];
@@ -4565,54 +4563,49 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
         currentPaths = nextPaths;
       }
       
-      // 探索完了時の候補リスト
       candidates = currentPaths.filter(p => p && p.valid);
 
-      // --- キャッシュ保存 ---
-      if (saveToCache && !ignoreStart && !ignoreGoalInRank) {
+      if (saveToCache) {
           const tSearchEnd = performance.now();
           const orsEnd = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
           
           window.__viterbiIntermediateCache = {
-              type: 'standard',
+              type: currentCacheType,
               candidates: candidates,
               metrics: {
                   ms: tSearchEnd - tSearchStart,
                   ors: orsEnd - orsStart
               }
           };
-          console.log("[Viterbi] Candidates cached for reuse.");
+          console.log(`[Viterbi] Candidates cached (${currentCacheType}).`);
       }
   }
 
-  // === ここからは「高速版(累積)」か「再ランク版(API)」かで分岐 ===
   const finalResults = [];
 
-  // A. パス累積モード (APIコールなしでFeature構築)
   if (usePathAccumulation && candidates.length > 0) {
+    // A. パス累積モード
     for (const cand of candidates) {
         try { 
-          // GoalまでのAPI 1回だけは呼ぶ必要がある（ここは共通）
           const leg = await apiFunc(cand.lastNode, goal, profile);
-
+          
+          // 累積処理 (中略: 元コードと同じ)
+          // 簡略化のため、ここは前回の修正コードの「パス累積モード」ブロックと同じ内容が入っていると仮定してください
+          // 実際にはここのブロックは変更ありません
+          
           const mergeStats = (s1, s2) => ({
              dist:   [...(s1?.dist||[]),   ...(s2?.dist||[])],
              time:   [...(s1?.time||[]),   ...(s2?.time||[])],
              energy: [...(s1?.energy||[]), ...(s2?.energy||[])]
           });
-          
-          // cand.accStats が無い場合へのガード
           const baseStats = cand.accStats || {dist:[],time:[],energy:[]};
           const baseCoords = cand.accCoords || [];
           const baseSegs = cand.accSegments || [];
-
           const finalStats = mergeStats(baseStats, leg.rawStats);
           const finalCoords = (baseCoords.length) 
              ? baseCoords.concat((leg.rawFeature?.geometry?.coordinates||[]).slice(1)) 
              : leg.rawFeature?.geometry?.coordinates;
           const finalSegments = [...baseSegs, ...(leg.rawFeature?.properties?.segments||[])];
-
-          // MSE計算
           let sumSq=0, count=0;
           finalSegments.forEach(seg => {
              const d=(Number(seg.distance)||0)/1000;
@@ -4620,8 +4613,6 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
              count++;
           });
           const totalMse = (count>0) ? sumSq/count : Infinity;
-
-          // Feature手動構築
           const constructedFeature = {
               type: "Feature",
               properties: {
@@ -4633,45 +4624,41 @@ async function solveViterbiGeneric(start, goal, groups, profile, options = {}) {
               },
               geometry: { type: "LineString", coordinates: finalCoords }
           };
-
           finalResults.push({
              rank: 0,
-             score: totalMse,
-             displayScore: totalMse,
+             score: totalMse, displayScore: totalMse,
              poi_names: cand.picks.map(p => p.name).join(' -> '),
              poi_latlngs: cand.picks.map(p => `${p.lat},${p.lon}`).join(' | '),
-             sigmaEnergy: stdDev(finalStats.energy),
-             dist: finalStats.dist,
-             stats: finalStats,
-             picks: cand.picks,
-             feature: constructedFeature 
+             sigmaEnergy: stdDev(finalStats.energy), dist: finalStats.dist, stats: finalStats,
+             picks: cand.picks, feature: constructedFeature 
           });
         } catch(e) { console.error(e); }
     }
   } 
-  // B. 従来/再ランクモード (再APIコール)
   else if (candidates.length > 0) {
-     // まず全候補に対して Goal エッジを計算だけしておく（Edgeログ記録のため）
-     for (const cand of candidates) {
-         try { await apiFunc(cand.lastNode, goal, profile); } catch(e) {}
+     // B. 従来モード (再APIコール)
+     
+     // Goal区間の計算 (ignoreGoalEdgeならスキップ)
+     if (!ignoreGoalEdge) {
+         for (const cand of candidates) {
+             try { await apiFunc(cand.lastNode, goal, profile); } catch(e) {}
+         }
      }
-     // ルートを引き直す
+
+     // ★修正ポイント: 6番(SG排除)のときはPOIのみをつなぐ
+     // ignoreGoalInRank=true が「6番」の特徴なので、これを判定に使う
      const ranked = await finalizeAndRank(start, goal, candidates, idealDistPerLeg, profile, { 
         includeGoalScore: !ignoreGoalInRank,
-        useAccumulatedCost: ignoreGoalInRank 
+        useAccumulatedCost: ignoreGoalInRank,
+        onlyInternal: ignoreGoalInRank // ★もし「Goal無視」モードなら、描画も「POIのみ」にする
      });
-     // 結果配列に統合
      ranked.forEach(r => finalResults.push(r));
   }
 
-  // ソート
   finalResults.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
   finalResults.forEach((r, idx) => r.rank = idx + 1);
 
-  // ★重要：キャッシュを使った場合は、呼び出し元に「これはキャッシュ利用結果だよ」と伝える
-  if (cachedMetrics) {
-      finalResults._cachedMetrics = cachedMetrics;
-  }
+  if (cachedMetrics) finalResults._cachedMetrics = cachedMetrics;
 
   return finalResults;
 }
@@ -4758,65 +4745,75 @@ async function solveBeamSearch(start, goal, groups, profile, options = {}) {
  * @param options.useAccumulatedCost trueなら「探索中の累積コスト」をそのまま順位に使う
  */
 /* ==========================================================
-   【修正版】finalizeAndRank (区間MSEで正しく評価)
+   【修正版】finalizeAndRank (POIのみルート対応)
    ========================================================== */
 async function finalizeAndRank(start, goal, candidates, idealDist, profile, options = {}) {
   const includeGoalScore = options.includeGoalScore !== false;
   const useAccumulatedCost = options.useAccumulatedCost === true;
+  // ★追加: POI間のみのルートを引くフラグ
+  const onlyInternal = options.onlyInternal === true;
 
   const finalResults = [];
 
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
-    const waypoints = [start, ...candidate.picks, goal];
+    
+    // ★ルート構成点の作成
+    let waypoints;
+    if (onlyInternal) {
+        // Start/Goalを除外し、POIのみをつなぐ
+        waypoints = candidate.picks.filter(Boolean).map(p => ({
+            lat: p.lat, lon: p.lon, name: p.name || 'POI'
+        }));
+        // POIが2つ未満だとルートが引けないので、ガード（Start/Goalを入れるか、エラーにする）
+        if (waypoints.length < 2) {
+            // 仕方ないのでStart/Goalを入れる（またはスキップ）
+            waypoints = [start, ...candidate.picks, goal];
+        }
+    } else {
+        // 通常（Start -> POIs -> Goal）
+        waypoints = [start, ...candidate.picks, goal];
+    }
 
     try {
-      await new Promise(r => setTimeout(r, 100)); // API負荷軽減
+      await new Promise(r => setTimeout(r, 100)); 
       
-      // 全区間のルートを取得
       const out = await routeLegStatsForWaypoints(waypoints, profile);
       
-      // ★修正ポイント：細かいstatsではなく、区間(segments)から正しいMSEを計算する
-      // （runBruteforceOnce と同じロジックに統一）
-      let rankingScore;
-      
-      // 計算用のMSE（Start～Goal全区間）
+      // MSE計算
+      // onlyInternalの場合、idealDist（全体平均）と比べるのはフェアではないかもしれないが、
+      // 「全体のリズム」を維持できているか見る指標としてそのまま使う。
       const totalMse = calcDistMseFromFeature(out.feature, idealDist);
 
+      let rankingScore;
       if (useAccumulatedCost) {
-        // 「Goal無視」などの場合：探索時の累積コスト(SSE)をそのまま使う
-        // ※厳密には MSE(平均) と SSE(総和) で単位が異なりますが、
-        //   Goal無視の文脈では「探索で見つけた値」を尊重します。
         rankingScore = candidate.currentCost;
       } else {
-        // 「再ランク」の場合：正しく計算した全区間MSEを使う
         rankingScore = totalMse;
       }
 
       finalResults.push({
         rank: 0,
         score: rankingScore, 
-        displayScore: totalMse, // 表示用は常に「真の全区間MSE」
+        displayScore: totalMse,
         poi_names: candidate.picks.map(p => p.name).join(' -> '),
         poi_latlngs: candidate.picks.map(p => `${p.lat},${p.lon}`).join(' | '),
         sigmaEnergy: stdDev(out.stats.energy),
         dist: out.stats.dist,
         picks: candidate.picks,
         stats: out.stats,
-        feature: out.feature // 地図表示用
+        feature: out.feature 
       });
     } catch (e) {
       console.warn("Ranking failed", e);
     }
   }
 
-  // スコアが小さい順にソート
   finalResults.sort((a, b) => (a.score ?? 1e9) - (b.score ?? 1e9));
   finalResults.forEach((r, idx) => r.rank = idx + 1);
   
   return finalResults;
 }
-
 
 /* =====================================================================
    【整理版】アルゴリズム比較・統合ロジック
@@ -5212,6 +5209,7 @@ window.downloadViterbiEdgesCsv = downloadViterbiLogCsv;
 </script>
 </body>
 </html>
+
 
 
 
