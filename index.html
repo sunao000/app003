@@ -750,15 +750,17 @@ window.addEventListener('DOMContentLoaded', ()=>{
   renderPerf();
 });
 
-/* ===== API 利用カウンタ ===== */
+/* ===== API 利用＆待機時間カウンタ ===== */
 const API_USED = {
-  orsTotal: 0,             // ページ全体での ORS 呼び出し回数
+  orsTotal: 0,             // ORS 呼び出し回数
   orsAtSolveStart: 0,
-  lastSolveOrs: 0,         // 直近の「ルート探索」1回で使った ORS 回数
+  lastSolveOrs: 0,
 
-  overpassTotal: 0,        // ページ全体での Overpass 呼び出し回数
+  overpassTotal: 0,        // Overpass 呼び出し回数
   overpassAtSolveStart: 0,
-  lastSolveOverpass: 0     // 直近の「ルート探索」1回で使った Overpass 回数
+  lastSolveOverpass: 0,
+
+  waitTotal: 0             // ★追加: API制限による待機時間の累計 (ms)
 };
 
 // アルゴリズムコード → 表示用ラベル
@@ -1150,13 +1152,9 @@ async function nomSearch(q){
 }
 
 
-/* ====== ORS ====== */
-/* ====== ORS API 呼び出し（レート制限対策・エラー詳細化版） ====== */
-
-// ★変更点1: 待機時間を 1100ms -> 2500ms (2.5秒) に変更
-// 無料枠は「1分間に40回」なので、1回あたり最低1.5秒は必要。余裕を持って2.5秒にします。
-const ORS_INTERVAL = 2500; 
-
+/* ==========================================================
+   【修正版】ORS API 呼び出し (待機時間計測対応)
+   ========================================================== */
 async function dir(body, profile) {
   // 現在時刻と前回の差分を計算
   const now = Date.now();
@@ -1165,6 +1163,8 @@ async function dir(body, profile) {
 
   // まだ時間が経っていなければ待機
   if (wait > 0) {
+    // ★待機時間を記録
+    if (typeof API_USED !== 'undefined') API_USED.waitTotal += wait;
     await new Promise(r => setTimeout(r, wait));
   }
 
@@ -1179,18 +1179,18 @@ async function dir(body, profile) {
     lastDirTs = Date.now();
     return d;
   } catch (e) {
-    // エラーでも時刻更新（連続リトライによるパンクを防ぐため）
+    // エラーでも時刻更新
     lastDirTs = Date.now();
     throw e;
   }
 }
 
-/* ==============================================
-   【修正版】API呼び出し関数（重複エラー対策済み）
-   ============================================== */
+/* ==========================================================
+   【修正版】API呼び出し関数 (リトライ待機時間計測対応)
+   ========================================================== */
 async function post(url, body) {
-  const MAX_RETRIES = 5; // 最大5回まで再挑戦
-  let delay = 5000;      // 初回は5秒待つ
+  const MAX_RETRIES = 5; 
+  let delay = 5000;      
 
   for (let i = 0; i < MAX_RETRIES; i++) {
     try {
@@ -1203,24 +1203,21 @@ async function post(url, body) {
         body: JSON.stringify(body)
       });
 
-      // 成功 (200 OK) なら結果を返して終了
-      if (r.ok) {
-        return await r.json();
-      }
+      if (r.ok) return await r.json();
 
-      // 429 (Too Many Requests) の場合 -> 待機してリトライ
       if (r.status === 429) {
-        console.warn(`[API] 429 Rate Limit detected. Waiting ${delay/1000}s... (Retry ${i+1}/${MAX_RETRIES})`);
-        // 既存の sleep 関数を使います
+        console.warn(`[API] 429 Rate Limit. Waiting ${delay/1000}s...`);
+        // ★リトライ待機時間を記録
+        if (typeof API_USED !== 'undefined') API_USED.waitTotal += delay;
+        
         await sleep(delay);
-        delay *= 2; // 待機時間を倍に増やす (5s -> 10s -> 20s...)
-        continue;   // ループの先頭に戻ってやり直す
+        delay *= 2; 
+        continue;   
       }
 
-      // その他のエラー (403:1日の上限超過, 500:サーバーエラーなど) -> 即座にエラーにして止める
       let errorMsg = `Error ${r.status}`;
       if (r.status === 403) {
-        errorMsg += ': APIキーの無効化、または1日の利用上限(2000回)を超過しました。ダッシュボードを確認してください。';
+        errorMsg += ': APIキー無効または上限超過';
       } else {
         try {
           const txt = await r.text();
@@ -1230,22 +1227,19 @@ async function post(url, body) {
       throw new Error(errorMsg);
 
     } catch (e) {
-      // ネットワークエラー等でfetch自体が失敗した場合もリトライ対象にする
-      // ただし、明示的にthrowした403エラーなどは再送しない
-      if (e.message.includes('Error 403')) {
-        throw e;
-      }
+      if (e.message.includes('Error 403')) throw e;
       
-      console.warn(`[API] Network or Fetch error. Waiting ${delay/1000}s...`, e);
-      // 既存の sleep 関数を使います
+      console.warn(`[API] Network/Fetch error. Waiting ${delay/1000}s...`, e);
+      // ★エラーリトライ待機時間を記録
+      if (typeof API_USED !== 'undefined') API_USED.waitTotal += delay;
+
       await sleep(delay);
       delay *= 2;
     }
   }
-
   throw new Error(`API Retry limit exceeded after ${MAX_RETRIES} attempts.`);
 }
-
+  
 /* ====== ルート表示関連 ====== */
 function clearRouteLayers(){
   Object.values(routeLayers).forEach(l=>{ if(l) map.removeLayer(l); });
@@ -4864,41 +4858,34 @@ function isAlgoEnabled(id){
   return !!(el && el.checked);
 }
 /* ======================================================
-   【修正版】メイン実行関数 (API回数表示 & CSV記録対応)
-   ====================================================== */
-/* ======================================================
-   【修正版】メイン実行関数 (API回数表示 & CSV記録対応)
+   【修正版】メイン実行関数 (待機時間の内訳表示対応)
    ====================================================== */
 async function runAlgoCompareDebug(){
   const panel = $('algoComparePanel');
   panel.textContent = '';
   window.__algoCompareRows = [];
   
-  // ★追加：実行のたびにViterbiの中間キャッシュをクリアする
   window.__viterbiIntermediateCache = null;
 
-  const tTotal = performance.now();
+  const tTotalStart = performance.now();
 
-  // 共通チェック
   if (!routeData?.fastest) return panel.textContent = 'ルート・POIを先に検索してください。';
   if (!restGroups?.length) return panel.textContent = '休憩トリガーがありません。';
 
-  ensureProjections(); // 射影計算
+  ensureProjections(); 
   const start = pts.find(p => p.type === 'start') || pts[0];
   const goal  = pts.find(p => p.type === 'goal')  || pts[pts.length - 1];
   const profile = 'cycling-road';
   const cap = Math.max(1, Number($('poiLimit')?.value) || 5);
   
-  // 候補作成
   const targetGroups = makeCandGroupsFromRestGroups(restGroups, cap);
   let bfRankMap = null; 
 
-  panel.textContent += '====== アルゴリズム比較 (7種・進捗対応版) ======\n\n';
+  panel.textContent += '====== アルゴリズム比較 (待機時間可視化版) ======\n\n';
 
   for (const cfg of ALGO_CONFIG) {
     if (!isAlgoEnabled(cfg.id)) continue;
 
-    // アルゴリズム名を表示
     panel.textContent += `${cfg.label}...`; 
     
     const onProgress = (cur, total) => {
@@ -4906,14 +4893,17 @@ async function runAlgoCompareDebug(){
         else panel.textContent += '.';
     };
 
-    // 待機 (API負荷軽減)
+    // アルゴリズム間の待機 (2秒) も計測対象外だが、体感には含まれる
+    // ここではAPI制限待機のみをフォーカスするため、このsleepは無視するか、
+    // API_USEDには含めない方針とします。
     await new Promise(r => setTimeout(r, (cfg.id==='dbg_linear' ? 100 : 2000)));
 
     const t0 = performance.now();
     
-    // APIカウント記録 (開始前)
-    const orsBefore = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
-    const ovBefore  = (typeof API_USED !== 'undefined') ? API_USED.overpassTotal : 0;
+    // 開始時点のカウンタを記録
+    const orsBefore  = (typeof API_USED !== 'undefined') ? API_USED.orsTotal : 0;
+    const ovBefore   = (typeof API_USED !== 'undefined') ? API_USED.overpassTotal : 0;
+    const waitBefore = (typeof API_USED !== 'undefined') ? API_USED.waitTotal : 0;
     
     let list = [];
 
@@ -4934,25 +4924,34 @@ async function runAlgoCompareDebug(){
       }
 
       const ms = performance.now() - t0;
-      const sec = ms / 1000;
       
-      const orsDiff = (typeof API_USED !== 'undefined') ? (API_USED.orsTotal - orsBefore) : 0;
-      const ovDiff  = (typeof API_USED !== 'undefined') ? (API_USED.overpassTotal - ovBefore) : 0;
+      const orsDiff  = (typeof API_USED !== 'undefined') ? (API_USED.orsTotal - orsBefore) : 0;
+      const ovDiff   = (typeof API_USED !== 'undefined') ? (API_USED.overpassTotal - ovBefore) : 0;
+      const waitDiff = (typeof API_USED !== 'undefined') ? (API_USED.waitTotal - waitBefore) : 0;
       
-      // ★修正：キャッシュ利用時はログに明記する
-      // list._cachedMetrics があれば、それは「探索をスキップしてキャッシュを使った」という意味
-      let logMsg = ` (${sec.toFixed(2)}s | ORS:${orsDiff} / Ov:${ovDiff})`;
+      // ★実処理時間（CPU + 通信） = 全経過時間 - API待機時間
+      const activeMs = Math.max(0, ms - waitDiff);
+
+      // 表示用フォーマット
+      const secTotal  = (ms / 1000).toFixed(1);
+      const secActive = (activeMs / 1000).toFixed(1);
+      const secWait   = (waitDiff / 1000).toFixed(1);
+
+      let logMsg = ` (${secTotal}s = 処理${secActive}s + 待機${secWait}s | ORS:${orsDiff})`;
       
+      // キャッシュ利用時の特別表示
       if (list._cachedMetrics) {
-          // 合算値を表示用に計算（実際にかかった時間 + キャッシュ生成にかかった時間）
-          const totalSec = (ms + list._cachedMetrics.ms) / 1000;
+          // キャッシュ生成にかかったコストを合算して表示
+          const combinedTotalMs = ms + list._cachedMetrics.ms;
+          // キャッシュのwait情報は保存していないため、厳密には不明だが、
+          // 概算として「キャッシュ利用回の待機は0」＋「生成時の待機は不明(実測に含まれる)」となる。
+          // ここではシンプルに「今回の実測 + 探索節約分」として表示
+          const savedSec = (list._cachedMetrics.ms / 1000).toFixed(1);
           const totalOrs = orsDiff + list._cachedMetrics.ors;
-          logMsg = ` (実測${sec.toFixed(2)}s + 探索${(list._cachedMetrics.ms/1000).toFixed(2)}s | Total ORS:${totalOrs}) [Cache]`;
           
-          // CSV出力用に、値を合算したものに書き換えておく
-          // （そうしないとCSV上で「再ランク」がめちゃくちゃ高速に見えてしまうため）
-          // ※もし「純粋な差分だけ見たい」場合はここをコメントアウトしてください
-          pushAlgoResultsForCsv(cfg.id, cfg.label, list, ms + list._cachedMetrics.ms, totalOrs, ovDiff);
+          logMsg = ` (実測${secTotal}s + 探索節約${savedSec}s | Total ORS:${totalOrs}) [Cache]`;
+          
+          pushAlgoResultsForCsv(cfg.id, cfg.label, list, combinedTotalMs, totalOrs, ovDiff);
       } else {
           pushAlgoResultsForCsv(cfg.id, cfg.label, list, ms, orsDiff, ovDiff);
       }
@@ -4971,10 +4970,11 @@ async function runAlgoCompareDebug(){
     }
   }
 
-  const totalMs = performance.now() - tTotal;
+  const totalMs = performance.now() - tTotalStart;
   const totalSec = totalMs / 1000;
   panel.textContent += `\n====== 完了 (Total: ${totalSec.toFixed(2)}s) ======\n`;
 }
+  
 /* ==========================================================
    【重要】区間データ(Segments)から正しくMSEスコアを計算する関数
    stats(細かいステップ)を使うと値が狂うため、必ずこれを使う
@@ -5209,6 +5209,7 @@ window.downloadViterbiEdgesCsv = downloadViterbiLogCsv;
 </script>
 </body>
 </html>
+
 
 
 
